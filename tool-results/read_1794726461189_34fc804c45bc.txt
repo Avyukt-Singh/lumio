@@ -1,0 +1,855 @@
+     1→// Lumio domain logic (chunk 1). Pure functions only: no I/O, no DOM, no clock access.
+     2→// Time is always injected (see 5.3 in the master prompt: packages/domain has no clock access).
+     3→
+     4→import { BANDS, type Band } from './content';
+     5→import type {
+     6→  ChapterResult,
+     7→  LumioState,
+     8→  SchedulePlan,
+     9→  ThemeName,
+    10→  XpEntry,
+    11→} from './types';
+    12→
+    13→// ---------- dates (one date utility with explicit zone awareness) ----------
+    14→// The prototype used a locale trick to produce yyyy-mm-dd. We use Intl with an
+    15→// explicit time zone. All learner-local day keys are produced by this function.
+    16→
+    17→export function dayKey(d: Date, tz: string): string {
+    18→  const fmt = new Intl.DateTimeFormat('en-CA', {
+    19→    timeZone: tz,
+    20→    year: 'numeric',
+    21→    month: '2-digit',
+    22→    day: '2-digit',
+    23→  });
+    24→  return fmt.format(d); // en-CA gives yyyy-mm-dd
+    25→}
+    26→
+    27→export function hourOf(d: Date, tz: string): number {
+    28→  return Number(
+    29→    new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', hour12: false }).format(d)
+    30→  );
+    31→}
+    32→
+    33→export function weekdayOf(d: Date, tz: string): number {
+    34→  // 0 = Sunday ... 6 = Saturday, computed from the learner-local date
+    35→  const wd = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(d);
+    36→  return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(wd);
+    37→}
+    38→
+    39→/** Monday-start ISO week key like 2025-W45 (5.6: weeks start on Monday). */
+    40→export function weekKey(d: Date, tz: string): string {
+    41→  const dateStr = dayKey(d, tz);
+    42→  const dt = new Date(dateStr + 'T12:00:00Z');
+    43→  const day = (dt.getUTCDay() + 6) % 7; // Mon=0
+    44→  dt.setUTCDate(dt.getUTCDate() - day + 3); // shift to Thursday of this ISO week
+    45→  const isoYear = dt.getUTCFullYear();
+    46→  const jan4 = new Date(Date.UTC(isoYear, 0, 4));
+    47→  const jan4Day = (jan4.getUTCDay() + 6) % 7;
+    48→  const firstThu = new Date(jan4);
+    49→  firstThu.setUTCDate(jan4.getUTCDate() - jan4Day + 3);
+    50→  const weekNum = 1 + Math.round((dt.getTime() - firstThu.getTime()) / (7 * 86400000));
+    51→  return `${isoYear}-W${String(Math.max(1, weekNum)).padStart(2, '0')}`;
+    52→}
+    53→
+    54→export function monthKey(d: Date, tz: string): string {
+    55→  return dayKey(d, tz).slice(0, 7); // yyyy-mm
+    56→}
+    57→
+    58→export function addDays(dateStr: string, n: number): string {
+    59→  const d = new Date(dateStr + 'T12:00:00Z');
+    60→  d.setUTCDate(d.getUTCDate() + n);
+    61→  return d.toISOString().slice(0, 10);
+    62→}
+    63→
+    64→// ---------- theme engine (3.2, 6.1) ----------
+    65→
+    66→export function themeAt(hour: number, sch: [number, number, number]): ThemeName {
+    67→  // sch = [morningStart, eveningStart, nightStart] (defaults 06 / 17 / 19).
+    68→  // Night wraps past midnight: 19:00 -> 05:59 (prototype 3.2).
+    69→  const [morningStart, eveningStart, nightStart] = sch;
+    70→  if (hour >= nightStart || hour < morningStart) return 'night';
+    71→  if (hour >= eveningStart) return 'evening';
+    72→  return 'morning';
+    73→}
+    74→
+    75→// ---------- XP ledger ----------
+    76→
+    77→export function totalXp(ledger: XpEntry[]): number {
+    78→  return ledger.reduce((s, e) => s + Math.max(0, e.amount), 0);
+    79→}
+    80→
+    81→export function xpOn(ledger: XpEntry[], date: string): number {
+    82→  return ledger.filter((e) => e.date === date).reduce((s, e) => s + Math.max(0, e.amount), 0);
+    83→}
+    84→
+    85→/**
+    86→ * XP for improvement rule (3.6): gain = max(0, score - previousBest) * 10,
+    87→ * plus a one-time +20 on the first scored attempt with score >= 1.
+    88→ */
+    89→export function quizXpGain(prevBest: number, score: number, firstAttempt: boolean): number {
+    90→  const improvement = Math.max(0, score - prevBest) * 10;
+    91→  const firstBonus = firstAttempt && score >= 1 ? 20 : 0;
+    92→  return improvement + firstBonus;
+    93→}
+    94→
+    95→// ---------- streaks (3.6) ----------
+    96→
+    97→/**
+    98→ * Streak = consecutive learner-local days with an XP-earning activity, counting back
+    99→ * from today, or from yesterday if today is not yet done. Opening the app never counts.
+   100→ * A spent streak freeze (`freezeUsed[date]`) shields one missed day, keeping the chain
+   101→ * alive (chunk 4A, 7.10).
+   102→ */
+   103→export function streakFrom(
+   104→  days: string[],
+   105→  today: string,
+   106→  freezeUsed?: Record<string, true>
+   107→): number {
+   108→  const set = new Set(days);
+   109→  const shield = freezeUsed ?? {};
+   110→  const active = (d: string) => set.has(d) || shield[d] === true;
+   111→  let cursor = active(today) ? today : addDays(today, -1);
+   112→  let n = 0;
+   113→  while (active(cursor)) {
+   114→    n += 1;
+   115→    cursor = addDays(cursor, -1);
+   116→  }
+   117→  return n;
+   118→}
+   119→
+   120→export function streakMilestone(streak: number): number | null {
+   121→  for (const m of [100, 60, 30, 14, 7, 3]) {
+   122→    if (streak >= m) return m;
+   123→  }
+   124→  return null;
+   125→}
+   126→
+   127→// ---------- mastery (3.6) ----------
+   128→
+   129→export type ChapterState = 'locked' | 'available' | 'completed' | 'mastered';
+   130→
+   131→export function chapterId(band: Band, index: number): string {
+   132→  return `${band}#${index}`;
+   133→}
+   134→
+   135→export function bestScore(res: Record<string, ChapterResult>, id: string): number {
+   136→  return res[id]?.best ?? 0;
+   137→}
+   138→
+   139→/** A chapter unlocks when the previous one is completed (best >= 1). */
+   140→export function chapterState(
+   141→  band: Band,
+   142→  index: number,
+   143→  res: Record<string, ChapterResult>
+   144→): ChapterState {
+   145→  const nq = BANDS[band].chapters[index]?.questions.length ?? 0;
+   146→  const best = bestScore(res, chapterId(band, index));
+   147→  if (best >= nq && nq > 0) return 'mastered';
+   148→  if (best >= 1) return 'completed';
+   149→  if (index === 0) return 'available';
+   150→  return bestScore(res, chapterId(band, index - 1)) >= 1 ? 'available' : 'locked';
+   151→}
+   152→
+   153→/** Number of chapters completed (best >= 1) and mastered (best == nq). */
+   154→export function chapterTally(band: Band, res: Record<string, ChapterResult>) {
+   155→  const n = BANDS[band].chapters.length;
+   156→  let completed = 0;
+   157→  let mastered = 0;
+   158→  for (let i = 0; i < n; i++) {
+   159→    const st = chapterState(band, i, res);
+   160→    if (st === 'completed' || st === 'mastered') completed += 1;
+   161→    if (st === 'mastered') mastered += 1;
+   162→  }
+   163→  return { completed, mastered, total: n };
+   164→}
+   165→
+   166→// ---------- scheduler (3.6 / 7.3 basics) ----------
+   167→// Sessions are placed after school, around dinner, before bedtime, with 15-minute gaps.
+   168→// Busy windows: school hours and dinner (45 minutes).
+   169→
+   170→export interface SessionSlot {
+   171→  startMin: number;
+   172→  endMin: number;
+   173→  label: string;
+   174→}
+   175→
+   176→export const GAP_MIN = 15;
+   177→export const DINNER_LEN = 45;
+   178→
+   179→/** Free study windows for a day: after school/work and after dinner, minus commitment blocks. */
+   180→function freeWindows(plan: SchedulePlan): Array<[number, number]> {
+   181→  const { startMin: _s, endMin, dinnerMin, bedMin, sessionLen } = plan;
+   182→  let free: Array<[number, number]> = [];
+   183→  if (endMin + GAP_MIN <= dinnerMin) free.push([endMin + GAP_MIN, dinnerMin]);
+   184→  if (dinnerMin + DINNER_LEN <= bedMin) free.push([dinnerMin + DINNER_LEN, bedMin]);
+   185→
+   186→  // subtract commitment blocks (clamped to sensible bounds) from the free windows
+   187→  const blocks = (plan.busy ?? [])
+   188→    .filter((c) => c.endMin > c.startMin)
+   189→    .map((c) => [Math.max(0, c.startMin), Math.min(24 * 60, c.endMin)] as [number, number])
+   190→    .sort((a, b) => a[0] - b[0]);
+   191→  for (const [bs, be] of blocks) {
+   192→    const next: Array<[number, number]> = [];
+   193→    for (const [ws, we] of free) {
+   194→      if (be <= ws || bs >= we) {
+   195→        next.push([ws, we]); // no overlap
+   196→        continue;
+   197→      }
+   198→      if (bs > ws) next.push([ws, Math.min(bs, we)]);
+   199→      if (be < we) next.push([Math.max(be, ws), we]);
+   200→    }
+   201→    free = next.filter(([ws, we]) => we - ws >= Math.min(10, sessionLen));
+   202→  }
+   203→  return free;
+   204→}
+   205→
+   206→/**
+   207→ * Lay out `plan.sessions` study sessions for one day. Sessions go after
+   208→ * school/work and after dinner, before bedtime, with 15-minute gaps. Structured
+   209→ * commitment blocks (7.1 upgrade) are subtracted from the free windows —
+   210→ * the planner never overlaps a commitment. Returns the slots, or a
+   211→ * "day too full" verdict instead of guessing (3.3: if the day is too full say so).
+   212→ */
+   213→export function planDay(plan: SchedulePlan): { slots: SessionSlot[]; dropped: number } {
+   214→  const { sessions, sessionLen } = plan;
+   215→  const free = freeWindows(plan);
+   216→
+   217→  const slots: SessionSlot[] = [];
+   218→  for (const [ws, we] of free) {
+   219→    let t = ws;
+   220→    while (slots.length < sessions && t + sessionLen <= we) {
+   221→      slots.push({
+   222→        startMin: t,
+   223→        endMin: t + sessionLen,
+   224→        label: sessions === 1 ? 'Study session' : `Session ${slots.length + 1}`,
+   225→      });
+   226→      t += sessionLen + GAP_MIN;
+   227→    }
+   228→    if (slots.length >= sessions) break;
+   229→  }
+   230→  return { slots, dropped: sessions - slots.length };
+   231→}
+   232→
+   233→/**
+   234→ * The day's plan with the learner's interactive reschedule overrides applied
+   235→ * (chunk 4A). Overrides are validated when generated (rescheduleOptions); an
+   236→ * override for a slot index that does not exist is ignored.
+   237→ */
+   238→export function planDayWithOverrides(
+   239→  plan: SchedulePlan,
+   240→  overrides?: Record<string, number>
+   241→): { slots: SessionSlot[]; dropped: number } {
+   242→  const base = planDay(plan);
+   243→  if (!overrides || Object.keys(overrides).length === 0) return base;
+   244→  const slots = base.slots.map((s, i) => {
+   245→    const ov = overrides[String(i)];
+   246→    if (typeof ov !== 'number') return s;
+   247→    return { ...s, startMin: ov, endMin: ov + (plan.sessionLen ?? s.endMin - s.startMin) };
+   248→  });
+   249→  return { slots, dropped: base.dropped };
+   250→}
+   251→
+   252→/**
+   253→ * Every valid 15-minute-aligned start time for moving session `index`: inside a
+   254→ * free window (school/dinner/commitments honoured), not overlapping another
+   255→ * placed session, and not its own current start.
+   256→ */
+   257→export function rescheduleOptions(
+   258→  plan: SchedulePlan,
+   259→  overrides: Record<string, number> | undefined,
+   260→  index: number
+   261→): number[] {
+   262→  const { slots } = planDay(plan);
+   263→  if (index < 0 || index >= slots.length) return [];
+   264→  const len = plan.sessionLen;
+   265→  const others = slots
+   266→    .map((s, i) => {
+   267→      const ov = overrides?.[String(i)];
+   268→      const start = typeof ov === 'number' ? ov : s.startMin;
+   269→      return { i, startMin: start, endMin: start + len };
+   270→    })
+   271→    .filter((s) => s.i !== index);
+   272→  const out: number[] = [];
+   273→  for (const [ws, we] of freeWindows(plan)) {
+   274→    for (let t = ws; t + len <= we; t += 15) {
+   275→      const clash = others.some((o) => t < o.endMin && o.startMin < t + len);
+   276→      if (!clash && t !== slots[index].startMin) out.push(t);
+   277→    }
+   278→  }
+   279→  return out;
+   280→}
+   281→
+   282→/**
+   283→ * Subject pairing (7.3): even-indexed sessions carry a core subject that rotates
+   284→ * day by day; odd-indexed sessions pair with the complementary subject when one
+   285→ * is set (session 2 pairs with the same core as session 1, keeping the pair). */
+   286→export function subjectForSession(
+   287→  subjects: string[],
+   288→  compSub: string | undefined,
+   289→  dayIndex: number,
+   290→  sessionIndex: number
+   291→): string | null {
+   292→  if (subjects.length === 0 && !compSub) return null;
+   293→  if (sessionIndex % 2 === 1 && compSub) return compSub;
+   294→  const pool = subjects.length > 0 ? subjects : compSub ? [compSub] : [];
+   295→  if (pool.length === 0) return null;
+   296→  const pairIndex = Math.floor(sessionIndex / 2);
+   297→  return pool[(dayIndex + pairIndex) % pool.length];
+   298→}
+   299→
+   300→/** The 7 dates Monday..Sunday of the week containing `today` (5.6: weeks start Monday). */
+   301→export function weekDatesOf(today: string): string[] {
+   302→  const d = new Date(today + 'T12:00:00Z');
+   303→  const day = (d.getUTCDay() + 6) % 7; // Mon=0
+   304→  const monday = addDays(today, -day);
+   305→  return Array.from({ length: 7 }, (_, i) => addDays(monday, i));
+   306→}
+   307→
+   308→export function minToLabel(min: number): string {
+   309→  const h = Math.floor(min / 60);
+   310→  const m = min % 60;
+   311→  const ampm = h >= 12 ? 'PM' : 'AM';
+   312→  const h12 = h % 12 === 0 ? 12 : h % 12;
+   313→  return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+   314→}
+   315→
+   316→/** The session currently unlocked (its slot has started) — sessions lock until start time. */
+   317→export function currentSlots(slots: SessionSlot[], nowMin: number) {
+   318→  return slots.map((s) => ({ ...s, unlocked: nowMin >= s.startMin, done: nowMin >= s.endMin }));
+   319→}
+   320→
+   321→// ---------- quests (3.6: daily, weekly, monthly, computed from real activity) ----------
+   322→// Chunk 4A: the full quest set. Every quest is computed from real logged activity
+   323→// — nothing here can be claimed without the underlying work.
+   324→
+   325→export interface QuestDef {
+   326→  id: string;
+   327→  period: 'daily' | 'weekly' | 'monthly';
+   328→  title: string;
+   329→  description: string;
+   330→  xp: number;
+   331→}
+   332→
+   333→export const QUESTS: QuestDef[] = [
+   334→  {
+   335→    id: 'daily-plan-review',
+   336→    period: 'daily',
+   337→    title: 'Ready for today',
+   338→    description: 'Review your plan for today',
+   339→    xp: 10,
+   340→  },
+   341→  {
+   342→    id: 'daily-focus-block',
+   343→    period: 'daily',
+   344→    title: 'Lock in once',
+   345→    description: 'Finish one focus block today',
+   346→    xp: 10,
+   347→  },
+   348→  {
+   349→    id: 'daily-cards',
+   350→    period: 'daily',
+   351→    title: 'Card refresh',
+   352→    description: 'Run one flashcard session today',
+   353→    xp: 10,
+   354→  },
+   355→  {
+   356→    id: 'weekly-3-days',
+   357→    period: 'weekly',
+   358→    title: 'Weekly rhythm',
+   359→    description: 'Learn on 3 different days this week',
+   360→    xp: 30,
+   361→  },
+   362→  {
+   363→    id: 'weekly-practice',
+   364→    period: 'weekly',
+   365→    title: 'Practice habit',
+   366→    description: 'Complete 3 practice sessions this week',
+   367→    xp: 30,
+   368→  },
+   369→  {
+   370→    id: 'weekly-mock',
+   371→    period: 'weekly',
+   372→    title: 'Mock check-in',
+   373→    description: 'Record one honest mock test this week',
+   374→    xp: 30,
+   375→  },
+   376→  {
+   377→    id: 'monthly-100xp',
+   378→    period: 'monthly',
+   379→    title: 'Monthly momentum',
+   380→    description: 'Earn 100 XP from activities this month',
+   381→    xp: 60,
+   382→  },
+   383→  {
+   384→    id: 'monthly-8-days',
+   385→    period: 'monthly',
+   386→    title: 'Monthly habit',
+   387→    description: 'Learn on 8 different days this month',
+   388→    xp: 60,
+   389→  },
+   390→];
+   391→
+   392→export interface QuestProgress {
+   393→  quest: QuestDef;
+   394→  progress: number;
+   395→  target: number;
+   396→  claimable: boolean;
+   397→  claimed: boolean;
+   398→}
+   399→
+   400→function daysInWeek(days: string[], week: string): number {
+   401→  return days.filter((d) => weekKey(new Date(d + 'T12:00:00Z'), 'UTC') === week).length;
+   402→}
+   403→
+   404→export function questProgress(
+   405→  state: Pick<
+   406→    LumioState,
+   407→    'days' | 'xpLedger' | 'quests' | 'planReviews' | 'practice' | 'focusLog' | 'mocks'
+   408→  >,
+   409→  now: Date,
+   410→  tz: string
+   411→): QuestProgress[] {
+   412→  const today = dayKey(now, tz);
+   413→  const wk = weekKey(now, tz);
+   414→  const mk = monthKey(now, tz);
+   415→  const weekDays = new Set(weekDatesOf(today));
+   416→  return QUESTS.map((q) => {
+   417→    let progress = 0;
+   418→    let target = 1;
+   419→    if (q.id === 'daily-plan-review') {
+   420→      progress = state.planReviews[today] ? 1 : 0;
+   421→    } else if (q.id === 'daily-focus-block') {
+   422→      progress = Math.min(1, state.focusLog[today]?.blocks ?? 0);
+   423→    } else if (q.id === 'daily-cards') {
+   424→      progress = state.practice['srs#' + today] ? 1 : 0;
+   425→    } else if (q.id === 'weekly-3-days') {
+   426→      target = 3;
+   427→      progress = Math.min(target, daysInWeek(state.days, wk));
+   428→    } else if (q.id === 'weekly-practice') {
+   429→      target = 3;
+   430→      const practiceDays = new Set(
+   431→        state.xpLedger
+   432→          .filter((e) => e.source === 'practice' && weekDays.has(e.date))
+   433→          .map((e) => e.date)
+   434→      );
+   435→      progress = Math.min(target, practiceDays.size);
+   436→    } else if (q.id === 'weekly-mock') {
+   437→      progress = Math.min(1, state.mocks.filter((m) => weekDays.has(m.date)).length);
+   438→    } else if (q.id === 'monthly-100xp') {
+   439→      target = 100;
+   440→      progress = Math.min(
+   441→        target,
+   442→        state.xpLedger
+   443→          .filter((e) => e.date.startsWith(mk) && e.source !== 'import' && e.source !== 'quest')
+   444→          .reduce((s, e) => s + Math.max(0, e.amount), 0)
+   445→      );
+   446→    } else if (q.id === 'monthly-8-days') {
+   447→      target = 8;
+   448→      progress = Math.min(target, state.days.filter((d) => d.startsWith(mk)).length);
+   449→    }
+   450→    const claimed = state.quests.some(
+   451→      (c) => c.questId === q.id && c.periodKey === (q.period === 'daily' ? today : q.period === 'weekly' ? wk : mk)
+   452→    );
+   453→    return { quest: q, progress, target, claimable: progress >= target && !claimed, claimed };
+   454→  });
+   455→}
+   456→
+   457→// ---------- achievements (3.6, ported from prototype ACH) ----------
+   458→
+   459→export interface AchDef {
+   460→  id: string;
+   461→  description: string;
+   462→  target: number;
+   463→  test: (s: AchSnapshot) => boolean;
+   464→}
+   465→
+   466→export interface AchSnapshot {
+   467→  daysCount: number;
+   468→  streak: number;
+   469→  bestStreak: number;
+   470→  questsClaimed: number;
+   471→  /** weekly quests claimed (Monday-start period) — chunk 2 */
+   472→  weeklyQuests: number;
+   473→  /** monthly quests claimed — chunk 2 */
+   474→  monthlyQuests: number;
+   475→  /** themes with at least one scored quiz — powers Any-light learner (chunk 2) */
+   476→  themesCount: number;
+   477→  focusBlocks: number;
+   478→  masteredChapters: number;
+   479→  completedPath: boolean;
+   480→  anyQuiz: boolean;
+   481→  fullScore: boolean;
+   482→}
+   483→
+   484→export const ACHIEVEMENT_RULES: AchDef[] = [
+   485→  { id: 'First lesson', description: 'Complete any chapter quiz', target: 1, test: (s) => s.anyQuiz },
+   486→  { id: 'First mastery', description: 'Score full marks on a chapter', target: 1, test: (s) => s.fullScore },
+   487→  { id: 'Path complete', description: 'Complete every chapter in your path', target: 1, test: (s) => s.completedPath },
+   488→  { id: 'Legend', description: 'Master every chapter in your path', target: 1, test: (s) => s.masteredChapters > 0 && s.completedPath },
+   489→  { id: 'Quest finisher', description: 'Claim any quest', target: 1, test: (s) => s.questsClaimed >= 1 },
+   490→  { id: 'Weekly champion', description: 'Claim a weekly quest', target: 1, test: (s) => s.weeklyQuests >= 1 },
+   491→  { id: 'Monthly master', description: 'Claim a monthly quest', target: 1, test: (s) => s.monthlyQuests >= 1 },
+   492→  { id: 'Any-light learner', description: 'Finish quizzes in all three themes', target: 3, test: (s) => s.themesCount >= 3 },
+   493→  { id: 'Quest hunter', description: 'Claim 10 quests', target: 10, test: (s) => s.questsClaimed >= 10 },
+   494→  { id: 'Focus starter', description: 'Complete one focus block', target: 1, test: (s) => s.focusBlocks >= 1 },
+   495→  { id: 'Steady focus', description: 'Complete 10 focus blocks', target: 10, test: (s) => s.focusBlocks >= 10 },
+   496→  { id: '3-day streak', description: 'Learn on 3 days in a row', target: 3, test: (s) => s.streak >= 3 || s.bestStreak >= 3 },
+   497→  { id: '7-day streak', description: 'Learn on 7 days in a row', target: 7, test: (s) => s.streak >= 7 || s.bestStreak >= 7 },
+   498→  { id: '14-day streak', description: 'Learn on 14 days in a row', target: 14, test: (s) => s.streak >= 14 || s.bestStreak >= 14 },
+   499→  { id: '30-day streak', description: 'Learn on 30 days in a row', target: 30, test: (s) => s.streak >= 30 || s.bestStreak >= 30 },
+   500→  { id: '60-day streak', description: 'Learn on 60 days in a row', target: 60, test: (s) => s.streak >= 60 || s.bestStreak >= 60 },
+   501→  { id: '100-day streak', description: 'Learn on 100 days in a row', target: 100, test: (s) => s.streak >= 100 || s.bestStreak >= 100 },
+   502→];
+   503→
+   504→/** Returns ids of achievements newly satisfied (not yet recorded). */
+   505→export function newlyUnlocked(s: AchSnapshot, already: Record<string, string>): string[] {
+   506→  return ACHIEVEMENT_RULES.filter((a) => !already[a.id] && a.test(s)).map((a) => a.id);
+   507→}
+   508→
+   509→// ---------- chunk 3: practice engine, games and labs ----------
+   510→
+   511→/** XP awarded per game id, once ever (master prompt 3.5: typically +20, labs +25). */
+   512→export const GAME_XP: Record<string, number> = {
+   513→  count: 20, memory: 20, word: 20, obs: 20, geo: 20, time: 20,
+   514→  frac: 20, eco: 20, pend: 25, alg: 20, bio: 25, math: 25, biz: 20,
+   515→  circ: 25, proj: 25, eng: 25, dx: 20, ship: 25, chem: 25,
+   516→  ai: 25, aif: 25, web: 25, code: 25,
+   517→};
+   518→
+   519→/** XP awarded once per day per practice kind. */
+   520→export const PRACTICE_XP: Record<string, number> = {
+   521→  srs: 10, drill: 10, adaptive: 15, revision: 15, errorlab: 10, remedial: 10,
+   522→};
+   523→
+   524→/** The legendary challenge: +40 XP once ever, unlocked after 2 mastered chapters. */
+   525→export const LEGENDARY_XP = 40;
+   526→
+   527→// ---------- chunk 4A: focus suite, mocks, streak freezes ----------
+   528→
+   529→/** XP per completed focus work block (7.9). */
+   530→export const FOCUS_BLOCK_XP = 5;
+   531→/** Max blocks that earn XP per day (7.9: daily limit guard). */
+   532→export const FOCUS_DAILY_BLOCK_CAP = 4;
+   533→/** XP for recording one honest mock test, once per day. */
+   534→export const MOCK_XP = 10;
+   535→
+   536→/** Focus presets: work / short break / long break, minutes (7.9). */
+   537→export const FOCUS_PRESETS = [
+   538→  { id: 'classic', label: 'Classic', work: 25, breakMin: 5, longBreak: 15 },
+   539→  { id: 'deep', label: 'Deep', work: 50, breakMin: 10, longBreak: 20 },
+   540→  { id: 'quick', label: 'Quick', work: 15, breakMin: 3, longBreak: 10 },
+   541→] as const;
+   542→
+   543→export type FocusPresetId = (typeof FOCUS_PRESETS)[number]['id'];
+   544→
+   545→export function focusPreset(id: string): (typeof FOCUS_PRESETS)[number] {
+   546→  return FOCUS_PRESETS.find((p) => p.id === id) ?? FOCUS_PRESETS[0];
+   547→}
+   548→
+   549→export function focusBlocksOn(focusLog: Record<string, FocusDayLite>, date: string): number {
+   550→  return focusLog[date]?.blocks ?? 0;
+   551→}
+   552→
+   553→interface FocusDayLite {
+   554→  blocks: number;
+   555→  mins: number;
+   556→}
+   557→
+   558→/** How many of today's blocks may still earn XP (daily limit guard). */
+   559→export function focusXpBlocksLeft(
+   560→  focusLog: Record<string, FocusDayLite>,
+   561→  date: string
+   562→): number {
+   563→  return Math.max(0, FOCUS_DAILY_BLOCK_CAP - focusBlocksOn(focusLog, date));
+   564→}
+   565→
+   566→/** Whether a mock XP grant for this day already exists (XP once per day). */
+   567→export function mockXpGranted(state: Pick<LumioState, 'xpLedger'>, date: string): boolean {
+   568→  return state.xpLedger.some((x) => x.source === 'mock' && x.date === date);
+   569→}
+   570→
+   571→/** The learner's subject pool (catalogue picks + custom entries). */
+   572→export function subjectPool(state: LumioState): string[] {
+   573→  return [
+   574→    ...new Set([...(state.profile?.subjects ?? []), ...(state.profile?.customSubjects ?? [])]),
+   575→  ];
+   576→}
+   577→
+   578→/** Whether this game has already paid out its one-time XP. */
+   579→export function gameXpGranted(state: LumioState, gameId: string): boolean {
+   580→  return state.xpLedger.some((x) => x.source === 'game' && x.ref === gameId);
+   581→}
+   582→
+   583→/** Whether a practice kind has already paid out today. */
+   584→export function practiceDoneToday(state: LumioState, kind: string, today: string): boolean {
+   585→  return Boolean(state.practice[`${kind}#${today}`]);
+   586→}
+   587→
+   588→/** Whether the legendary challenge has been completed (once ever). */
+   589→export function legendaryDone(state: LumioState): boolean {
+   590→  return state.xpLedger.some((x) => x.source === 'practice' && x.ref === 'legendary');
+   591→}
+   592→
+   593→/** Number of mastered chapters for the current band. */
+   594→export function masteredCount(state: LumioState): number {
+   595→  if (!state.profile) return 0;
+   596→  const band = state.profile.band;
+   597→  return BANDS[band].chapters.filter((_, i) => (state.res[chapterId(band, i)]?.best ?? 0) >= 2).length;
+   598→}
+   599→
+   600→export interface WeakTopic {
+   601→  chapterIndex: number;
+   602→  chapterTitle: string;
+   603→  subject: string;
+   604→  /** distinct missed question ids in this chapter */
+   605→  misses: number;
+   606→  /** chapter weight emphasises earlier fundamentals (2/3/1/2/1/2 ranking heuristic) */
+   607→  weight: number;
+   608→}
+   609→
+   610→/**
+   611→ * Weak-topic ranking from `state.wrong` (stable ids `${band}#${ch}#${q}`),
+   612→ * merged with the chapters the learner marked weak in self-reported mocks
+   613→ * (chunk 4A — each mock marking adds one miss-like weight). Chapters are
+   614→ * ranked by distinct misses, then by an importance weight that emphasises
+   615→ * the chapters the study path treats as foundations.
+   616→ */
+   617→export function weakTopics(state: LumioState, limit = 6): WeakTopic[] {
+   618→  if (!state.profile) return [];
+   619→  const band = state.profile.band;
+   620→  const counts = new Map<number, Set<string>>();
+   621→  for (const id of Object.keys(state.wrong)) {
+   622→    const [b, ch] = id.split('#');
+   623→    if (b !== band) continue;
+   624→    const idx = Number(ch);
+   625→    if (!Number.isFinite(idx)) continue;
+   626→    if (!counts.has(idx)) counts.set(idx, new Set());
+   627→    counts.get(idx)!.add(id);
+   628→  }
+   629→  // mock-reported weak chapters merge into the same ranking
+   630→  for (const mock of state.mocks ?? []) {
+   631→    for (const idx of mock.weakChapters ?? []) {
+   632→      if (!counts.has(idx)) counts.set(idx, new Set());
+   633→      counts.get(idx)!.add(`mock#${mock.date}#${mock.subject}`);
+   634→    }
+   635→  }
+   636→  const chapters = BANDS[band].chapters;
+   637→  const weightFor = (i: number) => [2, 3, 1, 2, 1, 2][i % 6];
+   638→  const rows: WeakTopic[] = [];
+   639→  for (const [idx, ids] of counts) {
+   640→    const ch = chapters[idx];
+   641→    if (!ch) continue;
+   642→    rows.push({
+   643→      chapterIndex: idx,
+   644→      chapterTitle: ch.title,
+   645→      subject: ch.subject,
+   646→      misses: ids.size,
+   647→      weight: weightFor(idx),
+   648→    });
+   649→  }
+   650→  rows.sort((a, b) => b.misses * b.weight - a.misses * a.weight || a.chapterIndex - b.chapterIndex);
+   651→  return rows.slice(0, limit);
+   652→}
+   653→
+   654→export interface DueCardGroup {
+   655→  chapterIndex: number;
+   656→  chapterTitle: string;
+   657→  cardIds: string[];
+   658→}
+   659→
+   660→/** Flashcards due today (or overdue) grouped by chapter, for the SRS session. */
+   661→export function dueCards(state: LumioState, today: string, cards: Array<{ id: string; chapterIndex: number; chapterTitle: string }>): DueCardGroup[] {
+   662→  const due = cards.filter((c) => {
+   663→    const s = state.srs[c.id];
+   664→    return !s || s.due <= today; // never-seen cards are always due
+   665→  });
+   666→  const groups = new Map<number, DueCardGroup>();
+   667→  for (const c of due) {
+   668→    if (!groups.has(c.chapterIndex)) {
+   669→      groups.set(c.chapterIndex, { chapterIndex: c.chapterIndex, chapterTitle: c.chapterTitle, cardIds: [] });
+   670→    }
+   671→    groups.get(c.chapterIndex)!.cardIds.push(c.id);
+   672→  }
+   673→  return [...groups.values()];
+   674→}
+   675→
+   676→// ---------- chunk 4A: calendar grid and RFC-5545 export ----------
+   677→
+   678→/**
+   679→ * A Monday-start month grid (6 rows x 7 cols). Cells outside the month are
+   680→ * null, so the calendar never invents neighbouring-month data.
+   681→ */
+   682→export function monthCells(year: number, month0: number): Array<string | null> {
+   683→  const first = new Date(Date.UTC(year, month0, 1));
+   684→  const lead = (first.getUTCDay() + 6) % 7; // Mon=0 blank cells
+   685→  const dayCount = new Date(Date.UTC(year, month0 + 1, 0)).getUTCDate();
+   686→  const cells: Array<string | null> = Array.from({ length: lead }, () => null);
+   687→  for (let d = 1; d <= dayCount; d++) {
+   688→    cells.push(
+   689→      `${year}-${String(month0 + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+   690→    );
+   691→  }
+   692→  while (cells.length % 7 !== 0) cells.push(null);
+   693→  return cells;
+   694→}
+   695→
+   696→function pad(n: number): string {
+   697→  return String(n).padStart(2, '0');
+   698→}
+   699→
+   700→/**
+   701→ * Convert a learner-local wall-clock time (date + minutes) in `tz` to the true
+   702→ * UTC instant. Iterative offset resolution handles DST boundaries honestly.
+   703→ */
+   704→export function zonedMinutesToUtc(dateStr: string, minutes: number, tz: string): Date {
+   705→  const hh = Math.floor(minutes / 60) % 24;
+   706→  const mm = minutes % 60;
+   707→  const naive = Date.parse(`${dateStr}T${pad(hh)}:${pad(mm)}:00Z`);
+   708→  let ts = naive;
+   709→  const fmt = new Intl.DateTimeFormat('en-CA', {
+   710→    timeZone: tz,
+   711→    year: 'numeric',
+   712→    month: '2-digit',
+   713→    day: '2-digit',
+   714→    hour: '2-digit',
+   715→    minute: '2-digit',
+   716→    second: '2-digit',
+   717→    hour12: false,
+   718→  });
+   719→  for (let i = 0; i < 3; i++) {
+   720→    const parts = fmt.formatToParts(new Date(ts));
+   721→    const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+   722→    const asUtc = Date.UTC(
+   723→      get('year'),
+   724→      get('month') - 1,
+   725→      get('day'),
+   726→      get('hour') % 24,
+   727→      get('minute'),
+   728→      get('second')
+   729→    );
+   730→    ts = naive - (asUtc - naive);
+   731→  }
+   732→  return new Date(ts);
+   733→}
+   734→
+   735→function icsEscape(text: string): string {
+   736→  return text.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
+   737→}
+   738→
+   739→function icsStamp(d: Date): string {
+   740→  return (
+   741→    `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T` +
+   742→    `${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`
+   743→  );
+   744→}
+   745→
+   746→export interface IcsEvent {
+   747→  /** stable unique id, e.g. `lumio-2025-11-15-0` */
+   748→  uid: string;
+   749→  date: string; // yyyy-mm-dd (learner-local)
+   750→  startMin: number;
+   751→  endMin: number;
+   752→  summary: string;
+   753→  description?: string;
+   754→}
+   755→
+   756→/**
+   757→ * Build an RFC-5545 VCALENDAR string. Times are emitted as UTC instants
+   758→ * (converted from the learner's zone), which every calendar app accepts
+   759→ * without requiring a VTIMEZONE block.
+   760→ */
+   761→export function buildIcs(events: IcsEvent[], tz: string, calName: string): string {
+   762→  const stamp = icsStamp(new Date());
+   763→  const lines: string[] = [
+   764→    'BEGIN:VCALENDAR',
+   765→    'VERSION:2.0',
+   766→    'PRODID:-//Lumio//Study Plan//EN',
+   767→    'CALSCALE:GREGORIAN',
+   768→    'METHOD:PUBLISH',
+   769→    `X-WR-CALNAME:${icsEscape(calName)}`,
+   770→  ];
+   771→  for (const ev of events) {
+   772→    const start = zonedMinutesToUtc(ev.date, ev.startMin, tz);
+   773→    const end = zonedMinutesToUtc(ev.date, ev.endMin, tz);
+   774→    lines.push(
+   775→      'BEGIN:VEVENT',
+   776→      `UID:${ev.uid}@lumio.app`,
+   777→      `DTSTAMP:${stamp}`,
+   778→      `DTSTART:${icsStamp(start)}`,
+   779→      `DTEND:${icsStamp(end)}`,
+   780→      `SUMMARY:${icsEscape(ev.summary)}`,
+   781→      ev.description ? `DESCRIPTION:${icsEscape(ev.description)}` : '',
+   782→      'END:VEVENT'
+   783→    );
+   784→  }
+   785→  lines.push('END:VCALENDAR');
+   786→  return lines.filter(Boolean).join('\r\n') + '\r\n';
+   787→}
+   788→
+   789→// ---------- chunk 4B: study tools helpers (7.14, pure) ----------
+   790→
+   791→export const NOTE_MAX_BYTES = 200 * 1024; // 200 KB per note, honest limit
+   792→export const MAX_NOTES = 50;
+   793→export const MAX_VIDEOS = 20;
+   794→
+   795→/**
+   796→ * Sanitize uploaded note text (defence in depth). Notes are ALWAYS rendered as
+   797→ * plain text children in React (never dangerouslySetInnerHTML), so this is a
+   798→ * second layer: control characters stripped, HTML-significant characters
+   799→ * escaped, length clamped.
+   800→ */
+   801→export function sanitizeNoteText(raw: string): string {
+   802→  return raw
+   803→    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '') // strip control chars (keep \t \n \r)
+   804→    .replace(/&/g, '&amp;')
+   805→    .replace(/</g, '&lt;')
+   806→    .replace(/>/g, '&gt;')
+   807→    .replace(/"/g, '&quot;')
+   808→    .replace(/'/g, '&#39;')
+   809→    .slice(0, NOTE_MAX_BYTES);
+   810→}
+   811→
+   812→/** Strip control characters from a filename before storing it. */
+   813→export function sanitizeFileName(name: string): string {
+   814→  const clean = name.replace(/[\u0000-\u001F\u007F]/g, '').trim();
+   815→  return clean.length > 0 ? clean.slice(0, 120) : 'note.txt';
+   816→}
+   817→
+   818→export function isNoteExtension(name: string): boolean {
+   819→  return /\.(txt|md|markdown)$/i.test(name);
+   820→}
+   821→
+   822→/**
+   823→ * Validate a study-video URL and extract the 11-character YouTube id.
+   824→ * Only youtube.com/watch?v=, youtube.com/shorts/, youtu.be/ and
+   825→ * youtube.com/embed/ forms are accepted — every other host is refused.
+   826→ */
+   827→export function youtubeIdFromUrl(raw: string): string | null {
+   828→  const url = raw.trim();
+   829→  if (url.length === 0 || url.length > 2048) return null;
+   830→  let parsed: URL;
+   831→  try {
+   832→    parsed = new URL(url);
+   833→  } catch {
+   834→    return null;
+   835→  }
+   836→  const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+   837→  const isYouTube = host === 'youtube.com' || host === 'm.youtube.com' || host === 'youtu.be' || host === 'youtube-nocookie.com';
+   838→  if (!isYouTube || parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+   839→  let candidate: string | null = null;
+   840→  if (host === 'youtu.be') {
+   841→    candidate = parsed.pathname.slice(1).split('/')[0];
+   842→  } else if (parsed.pathname === '/watch') {
+   843→    candidate = parsed.searchParams.get('v');
+   844→  } else {
+   845→    const m = parsed.pathname.match(/^\/(?:shorts|embed|live)\/([A-Za-z0-9_-]+)/);
+   846→    candidate = m ? m[1] : null;
+   847→  }
+   848→  return candidate && /^[A-Za-z0-9_-]{11}$/.test(candidate) ? candidate : null;
+   849→}
+   850→
+   851→/** Safe embed URL for a validated YouTube id (privacy-enhanced nocookie host). */
+   852→export function youtubeEmbedUrl(videoId: string): string {
+   853→  return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}?rel=0`;
+   854→}
+   855→

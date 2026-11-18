@@ -1,0 +1,13 @@
+const {chromium}=require(require('child_process').execSync('npm root -g').toString().trim()+'/playwright');
+(async()=>{const b=await chromium.launch();const p=await b.newPage({viewport:{width:1200,height:800}});p.setDefaultTimeout(4000);const errs=[];p.on('pageerror',e=>errs.push(e.message));
+await p.goto('file:///home/claude/lumio/lumio.html');await p.waitForTimeout(300);
+await p.getByText('School Student').click();await p.locator('#root select').nth(0).selectOption({label:'CBSE'});await p.locator('#root select').nth(1).selectOption({label:'Class 11'});
+await require('./_ob.js').finish(p);await p.waitForTimeout(300);
+console.log('empty:',await p.evaluate("bestStreak()"));
+await p.evaluate("S.days=['2026-10-20','2026-10-21','2026-10-22','2026-10-25','2026-10-26'];save()");
+console.log('best (expect 3):',await p.evaluate("bestStreak()"),'| current:',await p.evaluate("streak()"));
+await p.locator('.nb',{hasText:'Progress'}).click();
+console.log('shown:',(await p.locator('#root').innerText()).match(/Best streak[^\n]*/)?.[0]);
+await p.locator('.nb',{hasText:'Achievements'}).click();
+console.log('streak achievements:',(await p.locator('#root').innerText()).match(/\d+-day streak/g));
+console.log(errs);await b.close()})().catch(e=>console.log('FAIL',e.message.split('\n')[0]));

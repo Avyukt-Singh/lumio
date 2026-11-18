@@ -1,0 +1,17 @@
+const {chromium}=require(process.argv[2]+'/playwright');
+(async()=>{const b=await chromium.launch();const p=await b.newPage();const errs=[];p.on('pageerror',e=>errs.push(e.message));
+await p.goto('file://'+process.cwd()+'/lumio.html');
+const ok=(n,c,x='')=>console.log(c?'PASS':'FAIL',n,x);
+await p.evaluate(()=>{S.cat="school";S.board="CBSE";S.cls=CLS.indexOf("Class 8");S.band=bandOf(S.cls);S.name="T";S.res={};S.wrong={};S.qs={};S.fc={};S.mis={};S.flag={};save();V="study";render()});
+ok('no remedial lesson before any quiz',await p.evaluate(()=>!document.querySelector('#remedial')));
+await p.evaluate(()=>{const ch=B().ch;S.res[cid(1)]={best:1,att:1,last:today()};S.wrong[cid(1)+ch[1][3][0].t]=1;save();render()});
+const r=await p.evaluate(()=>{const e=document.querySelector('#remedial');const c=B().ch[1],q=c[3][0];return e?{title:e.textContent.includes(c[0]),notes:e.innerHTML.includes(c[2].slice(0,30)),ans:e.textContent.includes(q.o[q.a]),n:e.querySelectorAll('li').length}:null});
+ok('remedial lesson appears for top weak topic',!!r,JSON.stringify(r));
+ok('shows only the missed question',r&&r.n===1);
+ok('contains chapter notes and correct answer',r&&r.notes&&r.ans);
+await p.evaluate(()=>{S.wrong={};S.res={};const ch=B().ch;S.res[cid(0)]={best:1,att:1,last:today()};save();render()});
+ok('falls back to chapter questions when none missed',await p.evaluate(()=>{const e=document.querySelector('#remedial');return !!e&&e.querySelectorAll('li').length===B().ch[0][3].length}));
+await p.setViewportSize({width:390,height:800});await p.evaluate(()=>{document.querySelector('#remedial').open=true;render()});
+ok('no sideways scroll at 390 px',await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ok('no page errors',!errs.length,errs.join());
+await b.close()})();

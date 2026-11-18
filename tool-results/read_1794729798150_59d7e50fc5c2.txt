@@ -1,0 +1,192 @@
+     1→     1→# Lumio 2.0 — PROGRESS
+     2→     2→
+     3→     3→## Chunk status
+     4→     4→
+     5→     5→| Chunk | Scope | Status |
+     6→     6→| --- | --- | --- |
+     7→     7→| 1. Shell and Home | Recon, docs, design system, domain, content port, legacy importer, themes, density profiles, Mascot, shell, Home, Settings, PWA basics | **Done** |
+     8→     8→| 2. The working quiz loop | Event log + IndexedDB, full onboarding wizard, catalogue, study path, chapter reader, quiz, mastery, XP-for-improvement, progress dashboard, achievements screens, SW update prompt | **Done** |
+     9→     9→| 3. Playable games | Practice engine, shared game shell, every game and lab, coding labs | **Done** |
+    10→    10→| 4. Full study tools | Scheduler complete, revision/mocks, Focus suite, quests (full), streak freezes, study tools, guardian summary, Hindi/Hinglish | **Done** (4A: scheduler, mocks, focus, quests, freezes · 4B: study tools, guardian summary + privacy dashboard, Hindi/Hinglish i18n) |
+    11→    11→| 4C. XP & Streak Dashboard | Level/XP dashboard, 10-week heatmap, XP rule set (quiz base + score bonuses, lab first-clear, schedule session XP), daily XP goal, Streak Saver system (earn rules, cap 3, XP purchase, redemption), XP activity feed | **Done** |
+    12→    12→| 5. Backend-lite and final report | Accounts, friends, league, rooms, sync, ranked play, integrations, final docs | Not started |
+    13→    13→
+    14→    14→## Files built so far
+    15→    15→
+    16→    16→### Chunk 1
+    17→    17→- `src/app/page.tsx`, `layout.tsx`, `globals.css` — single route, brand fonts, design tokens
+    18→    18→- `src/lib/lumio/types.ts`, `content.ts`, `domain.ts`, `storage.ts` — schema, verbatim content, pure domain, storage
+    19→    19→- `src/components/lumio/Mascot.tsx`, `Shell.tsx`, `LumioApp.tsx`, `screens/Home.tsx`, `screens/Settings.tsx`
+    20→    20→- `public/manifest.webmanifest`, `public/sw.js`, `public/mascot/*.webp`
+    21→    21→- `scripts/contrast-audit.mjs`, `design-system/Lumio/MASTER.md`, `docs/*`
+    22→    22→
+    23→    23→### Chunk 2
+    24→    24→- `src/lib/lumio/db.ts` — Dexie/IndexedDB: `events` table (append-only log, `synced` flag) + `meta` (device id); localStorage fallback everywhere; persistence request
+    25→    25→- `src/lib/lumio/events.ts` — `LumioEvent` union, pure `applyEvent` reducer (bootstrap / onboarding / settings / plan / quiz / quest / plan-review / draft / flashcards), `replayEvents` fold, `appendEvent` with device metadata, one-time migration seeding the log from the chunk-1 `lumio-v2` snapshot
+    26→    26→- `src/lib/lumio/types.ts` — Profile v2 fields (academic year, subjects, textbooks, exams, compSub, guardian, dropper/above answers, wake, structured commitments), `Commitment`, `QuestionId`, `wrong`, `themes`, `flashcardDays`, `StoredEvent`
+    27→    27→- `src/lib/lumio/storage.ts` — `normalizeState` (forward migration), `resetAllStorage` (clears IDB + mirror), projection normalises before folding (older snapshots replay safely)
+    28→    28→- `src/lib/lumio/domain.ts` — commitments-aware `planDay` (blocks subtracted from free windows), achievements +3 (Weekly champion, Monthly master, Any-light learner; 17 rules)
+    29→    29→- `src/lib/lumio/chapterContent.ts` — pure reader-material builders: sentences, key points, glossary match, flashcards, class-aware subject catalogue, academic year, interest areas
+    30→    30→- `src/components/lumio/screens/Onboarding.tsx` — full wizard (replaces `FirstRun.tsx`, deleted): per-learner-type step machine, every 3.3 validation, structured commitments adder, guardian step by age (required young / default-on middle / optional 9-12), live schedule preview, skip-for-now on optional steps, pre-filled reopen with cancel
+    31→    31→- `src/components/lumio/screens/Study.tsx` — study path (locked/available/completed/mastered, connector line), header search, `BoardGuide` (board/class guide, confidence line, honest sourcing)
+    32→    32→- `src/components/lumio/screens/Reader.tsx` — notes with Listen (speechSynthesis sentence-by-sentence, hi voice for Devanagari, saved speed), key points, glossary, tap-to-flip flashcards with reviewed marker, source line, quiz CTA
+    33→    33→- `src/components/lumio/screens/Quiz.tsx` — one question at a time, per-question feedback with explanation, stable question ids, XP-for-improvement breakdown, mastery labels, kind celebration
+    34→    34→- `src/components/lumio/screens/Progress.tsx` — completion vs mastery (charts.csv row 19), subject mastery map, 28-day consistency calendar (row 5), 14-day XP trend (row 1), table alternatives for every chart
+    35→    35→- `src/components/lumio/screens/Achievements.tsx` — all 17 rules with unlock dates or live progress, kind copy
+    36→    36→- `src/components/lumio/Shell.tsx` — band nav keys (3.2), header settings gear, bottom nav capped at 5
+    37→    37→- `src/components/lumio/LumioApp.tsx` — async hydration (replay events → fallback mirror), single `dispatch` mutation path, reader/quiz overlays, SW update banner. HARD RULE: all derived values (`tz/calm/theme/density`) declared above every `useEffect`
+    38→    38→- `public/sw.js` — cache v2, `SKIP_WAITING` message handshake for the update prompt
+    39→    39→
+    40→    40→### Chunk 3
+    41→    41→- `src/components/lumio/Shell.tsx` — sidebar rebuilt: full-height rail pinned to the very left viewport edge (like desktop apps), collapse to a 68 px icon rail with `sr-only` labels, header now spans only the content column; mobile keeps the bottom nav
+    42→    42→- `src/lib/lumio/types.ts` — `SrsCard`, `PracticeKind`, `MistakeTag`, `LEITNER_INTERVALS`; state gains `srs`, `practice`, `mistakes`; events `game-won` (XP-once via ledger ref), `card-reviewed` (Leitner box + due date), `practice-done` (XP once per kind/day), `legendary-completed` (+40 once ever), `mistake-tagged`
+    43→    43→- `src/lib/lumio/events.ts` — applyEvent cases for all of the above (replay-safe dedupe)
+    44→    44→- `src/lib/lumio/storage.ts` — normalizeState defaults for the new fields (older snapshots replay safely)
+    45→    45→- `src/lib/lumio/domain.ts` — `GAME_XP`, `PRACTICE_XP`, `LEGENDARY_XP`, `gameXpGranted`, `practiceDoneToday`, `legendaryDone`, `masteredCount`, `weakTopics` (2/3/1/2/1/2 weights), `dueCards`
+    46→    46→- `src/components/lumio/games/GameShell.tsx` — shared game shell: honest model notes, XP-once badge, back navigation
+    47→    47→- `src/components/lumio/games/registry.ts` — 23 games/labs with the prototype's band gates (`gamesForBand`)
+    48→    48→- `src/components/lumio/screens/Practice.tsx` — practice engine, 8 tabs: Leitner flashcards (due-only session, box promotion 1/2/4/8/16 days, daily XP), weak-topic hub, 60-second timed drill (+ untimed round, 30 s/10 s announcements), adaptive practice (correct → later chapter, miss → same), mixed revision (≥ 2 completed chapters), legendary challenge (2 mastered, +40 once), error-analysis lab (5 worked steps from explanations), mistake notebook (4 tags, re-click clears)
+    49→    49→- `src/components/lumio/screens/Games.tsx` — games hub: PracticeHub on top, band-gated game grid with XP-once badges, games open in place
+    50→    50→- 23 game/lab components in `src/components/lumio/games/` — Number Hop, Match the Pictures, Spell the Word, Sharp Eyes, Fraction Puzzles, Ecosystem Builder, Pendulum Lab, Capital Challenge (all 28 states + 8 UTs), History Timeline (click-in-order, no drag), Algebra Challenges, Virtual Chemistry Lab (live atom tallies), Genetics Lab (Punnett), Modelling Lab (quadratic max), Budget Planner (50-30-20), Circuit Lab (series/parallel, target current), Projectile Lab (range/height missions), Engineering Lab (beam moments), Dataset Explorer (labelled sample data), Build Your Own Spaceship (rocket equation, prediction required; low-orbit honestly unreachable in one stage), AI Lab (decision stump, train/test gap), AI Fairness Lab (approval-gap mission), Coding Lab, Web Workspace
+    51→    51→- `src/components/lumio/games/CodingLab.tsx` — JS runs in a Blob-URL Web Worker (2 s hard terminate, deep-equal tests); Python via Pyodide 0.26.4 from CDN on first use (3 s execution race, honest offline state, main-thread loop warning); 3-level hint ladder (average/maxOf/total_even ported verbatim); drafts in `lumio-code-drafts`
+    52→    52→- `src/components/lumio/games/WebWorkspace.tsx` — sandboxed iframe live preview (400 ms debounce), real checked challenge (bold + red-dominant colour via computed styles), drafts in `lumio-web-drafts`
+    53→    53→- `src/components/lumio/LumioApp.tsx` — games screen wiring: `winGame`/`reviewCard`/`finishPractice`/`finishLegendary`/`tagMistake` all through `dispatch`
+    54→    54→
+    55→    55→### Chunk 4A
+    56→    56→- `src/lib/lumio/types.ts` — `FocusDay`, `MockResult`, `FreezeState`; state gains `focusLog`, `mocks`, `freeze`, `planOverrides`; events `focus-block-done` (XP 5/block capped 4/day enforced in applyEvent), `mock-recorded` (XP once/day), `freeze-used` (inventory-validated), `session-rescheduled` (override or null-clear); `XpEntry.source` gains `mock`
+    57→    57→- `src/lib/lumio/domain.ts` — `streakFrom` shields missed days via spent freezes; full 8-quest set (daily plan-review / focus block / cards; weekly 3-days / practice / mock; monthly 100 XP / 8 days) with real-activity progress; `FOCUS_PRESETS` (classic 25/5/15, deep 50/10/20, quick 15/3/10), `FOCUS_BLOCK_XP`, `FOCUS_DAILY_BLOCK_CAP`, `MOCK_XP`, `focusBlocksOn`/`focusXpBlocksLeft`; `planDayWithOverrides`, `rescheduleOptions` (15-min-aligned, commitment- and overlap-safe), `subjectForSession` (comp-subject pairing: odd sessions = compSub, even rotate core daily), `weekDatesOf`, `monthCells`, `zonedMinutesToUtc` (iterative offset, DST-safe), `buildIcs` (RFC-5545, escaped text, UTC instants); `weakTopics` merges mock-marked weak chapters; `subjectPool`
+    58→    58→- `src/lib/lumio/events.ts` — applyEvent cases for all four new events (replay-safe: focus ledger id `focus-<date>-<blockIndex>`, mock XP dedupe by date, freeze inventory guard, override maps)
+    59→    59→- `src/lib/lumio/storage.ts` — defaults + normalizeState for the four new fields; `projectState` wires `focusBlocks` into the achievements snapshot (Focus starter / Steady focus now unlock) and grants +1 freeze per reached 7-day streak milestone (`freeze.granted` marker prevents replay re-grants)
+    60→    60→- `src/lib/lumio/focusSounds.ts` — procedural Web Audio engine: brown noise (integrated buffer), rain (bandpass noise + 0.15 Hz breathing LFO), binaural pulse (200/204 Hz hard-panned sines + 0.1 Hz amplitude LFO); one master gain, try/catch-safe, zero audio files
+    61→    61→- `src/components/lumio/screens/Planner.tsx` — .ics export of the next 7 days (Blob download, verified output); 7-day plan with per-session Reschedule (valid-time chips from `rescheduleOptions`, reset to plan default, honest "no free window" state); month calendar (Monday-start, learned/review/focus-minutes markers, today ring); complementary-subject pairing badges
+    62→    62→- `src/components/lumio/screens/Focus.tsx` — presets, 4-block cycle strip, timestamp-only timer (1 s tick recomputes `target − (Date.now() − startedAt)`, zero drift), run persisted in `lumio-focus-run` with closed-app recovery crediting blocks completed while away, auto-start toggle (`lumio-focus-prefs`), strict mode voids on `visibilitychange` hidden, XP status with daily cap, ambient sound card (engine above + volume), 7-day focus-minutes chart (tabular-nums, sr-only list alternative)
+    63→    63→- `src/components/lumio/screens/Mocks.tsx` — self-reported mock flow: subject chips, date validation (never future), score/total, weak-chapter chips; history list with percentage and weak-topic badges
+    64→    64→- `src/components/lumio/screens/Practice.tsx` — hub accepts an extra `mocks` tab node
+    65→    65→- `src/components/lumio/screens/Games.tsx` — passes the mock panel through to the hub
+    66→    66→- `src/components/lumio/screens/Home.tsx` — streak uses freeze-aware `streakFrom`; freeze inventory pill + "Use freeze" redemption banner for the most recent missed day; Planner and Focus entry points
+    67→    67→- `src/components/lumio/Shell.tsx` — `planner`/`focus` nav entries (icon + label) appended after the band nav; mobile bottom-nav note now counts hidden tools
+    68→    68→- `src/components/lumio/LumioApp.tsx` — `finishFocusBlock`/`recordMock`/`useFreeze`/`rescheduleSession` dispatch paths; Planner/Focus screens wired into the router; MockTests mounted inside Games
+    69→    69→
+    70→    70→### Chunk 4B
+    71→    71→- `src/lib/lumio/i18n.ts` — EN/HI/HINGLISH dictionaries (~150 keys covering nav, common, Home, quests, Planner, Focus, Games, Study, Settings, Guardian, Tools), strict fallback `t()` (hi -> hi-Latn -> en; hinglish -> en), `tFor`, `questTitle`/`questDesc` id-to-key mapping
+    72→    72→- `src/lib/lumio/types.ts` — `LearnerNote` (sanitised plain text), `StudyVideo` (validated YouTube id only); state gains `notes`, `videos`; events `note-added`/`note-removed`/`video-added`/`video-removed` (dedupe by id) and `profile-patched` (bounded: language only)
+    73→    73→- `src/lib/lumio/domain.ts` — `sanitizeNoteText` (control chars stripped, HTML chars escaped, 200 KB clamp), `sanitizeFileName`, `isNoteExtension`, `NOTE_MAX_BYTES`/`MAX_NOTES`/`MAX_VIDEOS`, `youtubeIdFromUrl` (https only, youtube/youtu.be/shorts/embed/live forms, strict 11-char id), `youtubeEmbedUrl` (nocookie + rel=0)
+    74→    74→- `src/lib/lumio/storage.ts` — defaults + normalizeState for `notes`/`videos`
+    75→    75→- `src/components/lumio/screens/StudyTools.tsx` — worksheet generator (chapter + count chips, `.print-area` paper preview with ruled lines, answer key on its own printed page, window.print), note upload (extension/size/cap validation, sanitised, expandable plain-text `<pre>` — never HTML), study video (validated URLs only, honest refusals, duplicate guard, nocookie iframe with no-referrer + lazy)
+    76→    76→- `src/components/lumio/screens/Guardian.tsx` — consent-gated read-only weekly/all-time summary (days, XP, focus mins, mocks, chapters, freeze-aware streak) wrapped in `.print-area`, print button; privacy dashboard: data inventory, export backup, clear drafts (5 localStorage keys), full reset behind AlertDialog
+    77→    77→- `src/components/lumio/screens/Reader.tsx` — read-aloud state machine: idle/playing/paused + `resumeIdx`; exact-position Pause (speechSynthesis.pause), Stop keeps the current sentence, "Resume (sentence N)" + "Start over", honest capability note; stale flashcard paragraph removed (PARITY Partial row resolved)
+    78→    78→- `src/components/lumio/screens/Settings.tsx` — new Language card (en/hi/hinglish chips -> `profile-patched`)
+    79→    79→- `src/app/layout.tsx` + `src/app/globals.css` — Noto Sans Devanagari paired via `--font-devanagari`; `html.lang-hi` raises line-height to 1.75 (body) / 1.6 (headings) — zero clipping; print CSS (`.print-area`/`.print-hide`)
+    80→    80→- `src/components/lumio/Shell.tsx` + `Home/Planner/Focus/Games/Practice` — i18n applied via `tFor(state.profile?.lang)`; Shell takes a `lang` prop and maps nav ids to `nav.*` keys
+    81→    81→- `src/components/lumio/LumioApp.tsx` — `tools`/`guardian` screens wired; `addNote`/`removeNote`/`addVideo`/`removeVideo` dispatch paths; `lang` class effect on `<html>` (`lang-hi`/`lang-hinglish`/`lang-en` + `lang` attribute); `onLang` dispatches `profile-patched`
+    82→    82→
+    83→    83→### Chunk 4C
+    84→    84→- `src/components/lumio/screens/XpStreak.tsx` (NEW) — the XP & Streak dashboard: level + progress bar (`levelInfo`), XP today/this-week/longest-streak cards, daily-goal ring with "streak-active" label, at-risk banner, 10-week activity heatmap (`heatmapWeeks`, intensity by XP, tz rollover note), Streak Saver inventory (cap icons, earn-rule progress, XP purchase fallback), "How XP works" rule reference, recent XP activity feed (per-source icons, red negative entries, scrollable)
+    85→    85→- `src/lib/lumio/domain.ts` — `quizXpBreakdown` (replaces `quizXpGain`: base 15 + improvement + 80%/100% bonuses, anti-farm qualifies rule), `levelInfo` (100+50·(n−1) curve, tier titles), `xpThisWeek`, `xpPerDay`, `heatmapWeeks`/`HeatCell`, `weekKeyOfDate`, `totalXp`/`xpOn` raw-sum semantics (purchase negatives); constants `DAILY_XP_GOAL`, `QUIZ_*`, `LAB_FIRST_CLEAR_BONUS`, `SCHEDULE_*`, `SAVER_*`, `LAB_GAME_IDS`
+    86→    86→- `src/lib/lumio/types.ts` — `FreezeState` gains `weekXp`/`weekScore`/`weekPlan`/`bought` (per-week earn markers); `XpEntry.source` gains `'schedule' | 'purchase'`; state gains `sessionDone`; events `session-done`, `saver-bought`; `game-won` gains `lab`/`firstClear`
+    87→    87→- `src/lib/lumio/events.ts` — `quiz-attempted` uses the breakdown + grants a score saver at ≥ 90%; `game-won` adds the lab first-clear bonus + lab-pass saver; new `session-done` (XP once per date#index, on-time bonus) and `saver-bought` (cap + balance guarded, −100 XP 'purchase' entry); shared `grantScoreSaver` helper
+    88→    88→- `src/lib/lumio/storage.ts` — defaults/normalize for `sessionDone` + saver fields; `projectState` evaluates the weekly-XP milestone and full-schedule-week saver rules per ISO week (below cap only, logged when granted)
+    89→    89→- `src/components/lumio/Shell.tsx` — `xpstreak` ScreenId + Zap icon + nav entry (always reachable)
+    90→    90→- `src/lib/lumio/i18n.ts` — `nav.xpstreak` keys ×3; freeze strings rebranded to "Streak Saver" (saver / savers / Use Saver) in EN/HI/Hinglish
+    91→    91→- `src/components/lumio/LumioApp.tsx` — `completeSession`/`buySaver` dispatch paths; `winGame` sends `lab`/`firstClear`; `xpstreak` route; Streak Saver earn/use/purchase toasts in `dispatch`; Home gains `onSessionDone` + `onOpenXpStreak`
+    92→    92→- `src/components/lumio/screens/Home.tsx` — "Done" mark-complete button on unlocked sessions (future slots stay locked), daily-goal pill (45/50, success-tinted when met), at-risk banner after 17:00, XP pill is a dashboard link (mobile entry), saver pill rebrand
+    93→    93→- `src/components/lumio/screens/Planner.tsx` — "Done" button on today's started sessions with "done" badge; past/future slots honestly not markable
+    94→    94→- `src/components/lumio/screens/Quiz.tsx` — outcome carries the full XP breakdown (base/improvement/bonus80/bonus100), result screen explains each part
+    95→    95→
+    96→    96→## Verified in this chunk (Agent Browser, Chromium)
+    97→    97→
+    98→    98→### Chunk-4C verification
+    99→    99→- Dashboard: onboarding golden path (Class 6) → quest claim +10 XP → dashboard shows Level 1 · Spark · 10 XP total, level bar 10/100, daily goal 10/50, XP today/week cards, longest streak, 10-week heatmap (Mon-start columns, today ringed, intensity legend, tz rollover note "Days roll over at midnight in Asia/Kolkata")
+   100→   100→- Quiz XP rules: Fractions 2/2 perfect → result screen breakdown "+60 XP = 15 completion base + 20 improvement (best 0 → 2) + 25 perfect-score bonus"; result also fired the **Streak Saver earned!** toast (100% ≥ 90% rule, once per ISO week)
+   101→   101→- Schedule XP: with a +2.5 h clock shift past session 1 start, Home's "Done" button appeared on the unlocked slot only (session 2 still honestly Locked); marked done → +15 XP (10 + 5 on-time bonus), "Done" badge replaces the button, dashboard feed shows "Planned session +15"
+   102→   102→- Streak Saver purchase: after the second perfect quiz (145 XP balance) → Buy Saver → "Streak Saver purchased" toast, owned 2/3, ledger entry "Streak Saver bought −100 XP" rendered red in the feed, balance 45 XP, level recalculated 2 → 1 (raw sum)
+   103→   103→- Redemption: Home banner "Missed Saturday? Use a Streak Saver to keep your 1-day streak alive" → "Use Saver" → "Streak Saver used" toast; dashboard streak/best both recompute to 2 (shielded day counts), inventory 1/3, "1 used · 1 bought" counters
+   104→   104→- Anti-farm: retaking the same mastered quiz with the same 2/2 result → "+0 XP — You matched your best. Repeating a perfect quiz gives nothing — by design."
+   105→   105→- Honest gating: Buy Saver disabled below cap/balance with a specific reason ("Need 30 more XP to buy a Saver" / "inventory is full"); saver earn rows show live per-week progress (60/150 XP, 0/14 sessions, earned/in-progress badges)
+   106→   106→- Mobile 390 px: bottom nav caps at 5; the hero XP pill on Home is a button opening the dashboard (mobile entry point); desktop sidebar shows the new "XP & Streak" nav item
+   107→   107→- `bun run lint` clean; zero fresh browser console errors; dev.log clean; fixed during verification: weekly "Earned this week" card now counts ALL earned XP (purchases excluded) while the Saver milestone row keeps activity-only XP — the two numbers are labelled separately
+   108→   108→- Screenshots: docs/shots/xp-streak-dashboard.png, xp-streak-savers.png, xp-streak-feed.png
+   109→   109→
+   110→   110→### Chunk-4B verification
+   111→   111→- Study tools: worksheet preview renders ("Lumio worksheet", subject band, ruled lines) with question-count chips; note upload verified end-to-end in-browser via a DataTransfer File — `<script>alert(1)</script>` stored and displayed as escaped inert text (no execution), char count + date + remove button all present; video: `https://evil.com/watch?v=abc` refused with the honest message, `youtube.com/watch?v=...` accepted and embedded as `https://www.youtube-nocookie.com/embed/<id>?rel=0` (iframe src verified)
+   112→   112→- Guardian: consent off -> only privacy dashboard (counts + records line + export/clear-drafts/reset); consent on -> weekly/all-time summaries with freeze-aware streak; print button present
+   113→   113→- Reader read-aloud (with a synthesiser stub because headless Chromium fires synthesis-failed honestly): Listen -> Pause + Stop; Pause -> exact-position Resume; Resume -> playing; Stop keeps the place — buttons become "Resume (sentence 1)" + "Start over from the first sentence". PARITY Partial row resolved
+   114→   114→- i18n: Hindi -> html class `lang-hi`, body font-family resolves Noto Sans Devanagari first, line-height 28px/16px = 1.75 (no clipping), nav = होम/पढ़ाई/खेल/प्रगति; Hinglish -> `lang-hinglish`, Roman transliteration (Home/Padhai/Games); English restores cleanly; language persists via `profile-patched` through the event log
+   115→   115→- Persistence: notes 1 + videos 1 + 70 XP intact across reload through the IndexedDB event log; zero browser console errors; `bun run lint` clean; `tsc --noEmit` clean (project code)
+   116→   116→- Screenshots: docs/shots/chunk4-morning-desktop.png, chunk4-evening-desktop.png, chunk4-night-desktop.png, chunk4-mobile-night.png, chunk4-hindi-home.png
+   117→   117→
+   118→   118→### Chunk-4A verification
+   119→   119→- Domain sanity (bun eval, pure): `streakFrom` freeze shield (0 -> 4 with one spent freeze); reschedule options exclude the slot's own start and honour commitments; comp-subject pairing (Maths, Python, Science, Python); `monthCells` (35 cells for Nov 2025); `buildIcs` output RFC-5545 with escaped commas/semicolons; 16:00 IST -> 10:30Z UTC conversion; focus XP cap (1 block left at 3)
+   120→   120→- Planner: 7-day plan renders with subject badges; reschedule session 1 -> 5:00 PM applied with "rescheduled" marker, Reset restores 3:15 PM; .ics download produced `lumio-plan.ics` (14 VEVENTs, valid VCALENDAR, correct UTC times); month calendar with prev/next month
+   121→   121→- Focus: preset radio group; cycle strip "Block 1 of 4"; started a Quick block — timer 14:57 timestamp-based; navigating away and back resumed at 14:53 (no drift); with strict mode ON, hiding the tab voided the block with the honest message and zero credit; **closed-app recovery**: a saved run 26 min old was credited on reload (+5 XP, 1/4 blocks, "Completed while you were away"); ambient rain started with zero console errors; 7-day chart with sr-only alternatives
+   122→   122→- Mocks: recorded Mathematics 62/100 with 2 weak chapters -> "+10 XP", history shows percentage; weak-topic tab now lists both mock-marked chapters; Mock check-in weekly quest became claimable and was claimed (+30 XP)
+   123→   123→- Quests: full 8-quest set renders on Home (3 daily / 3 weekly / 2 monthly)
+   124→   124→- Persistence: 70 XP (game 25 + focus 5 + mock 10 + quest 30) intact across reload through the IndexedDB event log; `freeze`/`focusLog`/`mocks` all present in the projection
+   125→   125→- Mobile 390 px: no horizontal scroll; bottom nav still caps at 5 with the honest "more tools" note
+   126→   126→- `bun run lint` clean; `tsc --noEmit` clean (project code); zero browser console errors
+   127→   127→
+   128→   128→### Chunk-3 verification (previous chunk, retained)
+   129→   129→- Sidebar: pinned to x=0, full viewport height (240 px open / 68 px collapsed rail with sr-only labels); header spans only the content column; 390 px mobile keeps the bottom nav with zero horizontal scroll
+   130→   130→- Full school wizard re-run (Class 8, CBSE): onboarding → Home → Games screen
+   131→   131→- Capital Challenge: 5-in-a-row win, badge flips to "+20 XP collected"; wrong answers show the correct capital and reset the streak
+   132→   132→- Pendulum Lab: 3 missions (1.5/2.0/2.5 s targets within ±0.05 s) → "+25 XP collected"
+   133→   133→- Flashcards: full due session of 11 cards, flip → "I knew it" → box promotion, "Reviewed 11 cards" summary, +10 XP once for the day
+   134→   134→- Timed drill: 60 s countdown (timestamp-based), score increments, option feedback; untimed toggle present
+   135→   135→- Coding Lab: JS `isEven` fixed → 3/3 tests pass in the Web Worker, "+25 XP collected"; Python exercise ran REAL Pyodide (starter fails honestly, `is_even` fix → 3/3 pass, "Ran in local Python (Pyodide, WebAssembly)"); hint ladders present
+   136→   136→- Web Workspace: live sandboxed preview; kind progressive check feedback ("bold — now make it red") → pass state → "+25 XP collected"
+   137→   137→- XP ledger: 105 XP total after geo 20 + pend 25 + srs 10 + code 25 + web 25; reload persistence through the IndexedDB event log (105 XP intact)
+   138→   138→- Mixed revision and Legendary show their honest locked states with zero progress data; mistake notebook empty state is kind
+   139→   139→- Contrast audit 33/33 WCAG AA; `bun run lint` clean; `tsc --noEmit` clean (project code); zero browser console errors
+   140→   140→- Fixed during verification: sidebar flex-column root wrapped the content below the rail (root now `md:flex-row`); CodingLab Pyodide load was cancelled by its own effect cleanup on pyStatus change (now ref-guarded); two corrupted lines in subagent-written games (BudgetPlanner savings setter, ChemistryLab coefficient indexing); CodingLab run footer mislabelled JS runs as "local Python"
+   141→   141→
+   142→   142→### Chunk-2 verification (previous chunk, retained)
+   143→   143→- Full school wizard (Class 8 + Class 5 runs): board, class, year/language, catalogue subjects + custom, textbooks skip, day times (wake/school/dinner/bed validated), structured commitment block (cricket 17:00-18:00) respected by the schedule preview, outside-hours step, goal + complementary subject, guardian defaults by age (required Class 5, default-on Class 8), live preview "All N sessions fit today"
+   144→   144→- Quest loop: mark reviewed → claim +10 XP → day marked → streak 1
+   145→   145→- Study loop: path states correct (completed unlocks next), header search, reader tabs, flashcards flip + reviewed marker, quiz with wrong/right feedback, results screen showing +30 XP = 10 improvement (0→1) + 20 first-attempt bonus, "Collect and continue"
+   146→   146→- Reload persistence through the event log (localStorage cleared → IndexedDB replay restores everything)
+   147→   147→- Migration: chunk-1 snapshot written to localStorage with no event log → bootstrap event seeds the log and replays (profile, 120 XP, chapter result preserved); replays with localStorage removed
+   148→   148→- Profile edit from Settings: wizard reopens pre-filled (name/board intact), cancel keeps progress
+   149→   149→- Board guide with real band data and honest confidence line
+   150→   150→- Themes: manual override applies `theme-*` classes on `<html>`; night/density classes verified; 33/33 contrast audit still passes
+   151→   151→- Mobile 390 px: no horizontal scroll; bottom nav 5 items max with honest note for `board`
+   152→   152→- Achievements: 2/17 unlocked after the demo loop; Weekly champion and Any-light learner show live progress bars
+   153→   153→- Lint clean; `tsc --noEmit` clean (project code)
+   154→   154→
+   155→   155→## Known issues / bugs (open)
+   156→   156→
+   157→   157→- None open in chunk-4C scope.
+   158→   158→- Streak-break-with-no-saver path: the dashboard/Home show the honest at-risk warning (goal unmet after 17:00) and the streak simply ends when no saver is held — verified logically; a full calendar-day rollover to observe the broken streak live was not waited for in the demo session (clock-shift was used for the redemption path instead).
+   159→   159→- Chunk-4A open items retained below (freeze redemption e2e now RESOLVED — see 4C verification).
+   160→   160→- Strict mode voids on tab hide (`visibilitychange`) — SPA navigation away from the Focus screen resumes the block from timestamps instead of voiding (the learner is still in Lumio); noted as intentional.
+   161→   161→- Read-aloud audio itself cannot be verified headless (synthesis-failed is the honest error state there); the state machine was verified with a synthesiser stub — real-device check stays in KNOWN_LIMITS.
+   162→   162→- Study content (chapters/questions) remains English; only interface chrome is translated (chunk 4B).
+   163→   163→- Chunk-3/2 history retained below (official links, Pyodide CDN, etc.).
+   164→   164→
+   165→   165→## Decisions taken (see docs/DESIGN.md Decision Log and docs/ADR/)
+   166→   166→
+   167→   167→- Chunk 4C: `totalXp`/`xpOn` now sum the ledger RAW — 'purchase' is the only negative kind; clamping would make XP purchases free. Purchases are excluded from weekly-XP displays and quest progress, so XP milestones still measure learning activity
+   168→   168→- Chunk 4C: XP rule set = quiz base 15 (first attempt ≥ 1 or beat-best only) + 10/improved-question + 10 at 80%+ / 25 at 100%; labs pay once-ever + 10 first-clear bonus; planned sessions pay 10 + 5 on-time, XP once per date#index; retakes with no improvement pay nothing (spec's anti-farm rule)
+   169→   169→- Chunk 4C: level curve = 100 + 50·(n−1) XP per level (100, 150, 200 …), titles Spark → Luminary; levels are derived from total XP, never stored
+   170→   170→- Chunk 4C: Streak Saver cap 3; earn rules each pay at most once per ISO week (weekly 150 activity-XP milestone, 90%+ quiz / lab pass, full schedule week = plan.sessions × 7 session-done marks) and are evaluated in the projection; the 7-day-streak milestone rule from 4A is unchanged; redemption stays learner-confirmed ("never spent silently"), with earn/use toasts
+   171→   171→- Chunk 4C: session completion is only markable once the slot has started (Home + Planner), so future sessions can never be ticked for dishonest XP
+   172→   172→- Chunk 4C: the full schedule week counts session-done marks per week key against `plan.sessions × 7` — an honest approximation documented here since plans can change mid-week
+   173→   173→- Event log (IndexedDB/Dexie) is the source of truth; localStorage `lumio-v2` becomes a projected snapshot mirror for boot/export/fallback — ADR 0002 (chunk-2 part)
+   174→   174→- Bootstrap event acts as a mid-log checkpoint: imports and resets replay as snapshot overrides, keeping the append-only model
+   175→   175→- Quiz attempts mark streak days only when they earn XP (improvement or first-attempt bonus) — matches 3.6 "XP-earning activity"
+   176→   176→- Wrong answers keyed by stable ids `${chapterId}#${questionIndex}` (3.7 weakness fix, ready for weak-topic ranking in chunk 3)
+   177→   177→- Reader material (key points, flashcards, glossary picks) derived by pure functions from the verbatim content; `content.ts` untouched so provenance stays intact
+   178→   178→- Board guide ships as text-only confidence/guide content; official links wait for the link checker (7.2, no invented links)
+   179→   179→- Charts chosen from `charts.csv` rows 19/5/1 with table alternatives; trend falls back to numbers under 4 active points per row 1
+   180→   180→- Chunk 4A: freezes are granted by the projection (+1 per 7-day streak milestone, `freeze.granted` marker) and redeemed explicitly by the learner from Home — redemption is a visible choice, never automatic
+   181→   181→- Chunk 4A: focus runs persist in utility localStorage (`lumio-focus-run`), not the event log — like code drafts, only completed blocks (XP) enter the log; the timer is timestamp-only (`Date.now()` deltas), so closing the app never loses or drifts a block
+   182→   182→- Chunk 4A: `.ics` exports UTC instants converted from the learner zone (iterative offset) instead of shipping a VTIMEZONE block — every calendar app accepts it and DST stays honest
+   183→   183→- Chunk 4A: reschedule overrides are stored per date+session index (`planOverrides`) so the base plan stays the single source of truth; option generation validates commitments/overlap, so an override can never collide
+   184→   184→
+   185→   185→## Next steps (chunk 5, only after the user says continue)
+   186→   186→
+   187→   187→1. Minimal accounts (register, login, email verification, recovery codes, delete) against the local server
+   188→   188→2. Parent link by invite; friend codes and friends; weekly league and leaderboard; focus rooms
+   189→   189→3. Cross-device sync of the event log (two-device verification); ranked and unranked attempts
+   190→   190→4. Optional AI-lite and free-tier integrations (uploads/OCR, speech, open data) with the degradation matrix
+   191→   191→5. Final acceptance minus capstone-cut items; final report and docs sweep
+   192→   192→

@@ -1,0 +1,18 @@
+const {chromium}=require(require('child_process').execSync('npm root -g').toString().trim()+'/playwright');
+(async()=>{const b=await chromium.launch();
+const run=async(label,setup,vp)=>{const p=await b.newPage({viewport:vp||{width:1200,height:800}});p.setDefaultTimeout(4000);const errs=[];p.on('pageerror',e=>errs.push(e.message));
+await p.goto('file:///home/claude/lumio/lumio.html');await p.waitForTimeout(300);await setup(p);await p.waitForTimeout(300);
+const txt=async()=>(await p.locator('#root').innerText()).replace(/\n+/g,' | ');
+const nav=await p.locator('.nb,nav button').evaluateAll(e=>e.map(x=>x.innerText.replace(/\n/g,' ').trim()).filter(Boolean));
+await p.locator('.nb,nav button').filter({hasText:'Study'}).first().click();await p.waitForTimeout(200);
+const st=await txt();
+const ov=await p.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2);
+console.log('['+label+'] nav:',nav.slice(0,8).join(', '),'\n  study:',st.slice(0,230),'\n  src link:',/Official source/.test(st),'| overflowX:',ov,'| errs:',errs);
+await p.close()};
+const school=(board,cls)=>async p=>{await p.getByText('School Student').click();await p.locator('#root select').nth(0).selectOption({label:board});await p.locator('#root select').nth(1).selectOption({label:cls});await require('./_ob.js').finish(p)};
+await run('ICSE Class 8',school('ICSE / CISCE','Class 8'));
+await run('UP Board Class 10',school('UP Board','Class 10'));
+await run('Dropper',async p=>{await p.getByText('Dropper').first().click();await require('./_ob.js').finish(p)});
+await run('Above 12',async p=>{await p.getByText('Above Class 12').click();await require('./_ob.js').finish(p)});
+await run('Mobile CBSE 11',school('CBSE','Class 11'),{width:390,height:800});
+await b.close()})().catch(e=>console.log('FAIL',e.message.split('\n')[0]));

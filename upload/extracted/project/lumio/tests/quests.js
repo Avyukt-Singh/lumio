@@ -1,0 +1,37 @@
+const {chromium}=require(process.argv[2]+'/playwright');
+(async()=>{const b=await chromium.launch();const p=await b.newPage();const errs=[];p.on('pageerror',e=>errs.push(e.message));
+await p.clock.install({time:new Date('2026-11-11T17:00:00')}); // a Wednesday
+await p.goto('file://'+process.cwd()+'/lumio.html');const ok=(n,c,x='')=>console.log(c?'PASS':'FAIL',n,x);
+await p.evaluate(()=>{S.cat="school";S.board="CBSE";S.cls=CLS.indexOf("Class 8");S.band=bandOf(S.cls);S.name="T";S.res={};S.days=[];S.mis={};S.used={};S.xp=0;S.plan=Object.assign(S.plan,{st:"16:00",len:30,n:2,bed:"22:00",sh1:"08:00",sh2:"15:00",dn:"20:00"});FO().log={};save();V="home";render()});
+ok('quests card shows daily, weekly and monthly',await p.evaluate(()=>{const t=document.querySelector('#quests').innerText;return t.includes('Today')&&t.includes('This week')&&t.includes('This month')&&document.querySelectorAll('#quests [role=progressbar]').length===10}));
+ok('week starts on Monday 2026-11-09',await p.evaluate(()=>qWk()==='2026-11-09'));
+ok('no Claim buttons with no activity',await p.evaluate(()=>!document.querySelector('[data-qc]')));
+await p.evaluate(()=>{S.res.a={best:1,att:1,last:'2026-11-11'};S.res.b={best:1,att:1,last:'2026-11-10'};S.res.c={best:1,att:1,last:'2026-11-02'};S.days=['2026-11-09','2026-11-10','2026-11-11','2026-11-03'];save();render()});
+ok('weekly counts only this week (2 quizzes, 3 days); monthly counts the whole month (3, 4)',await p.evaluate(()=>{const q=qAll();return q[1][2][1][2]===2&&q[1][2][0][2]===3&&q[2][2][1][2]===3&&q[2][2][0][2]===4}));
+ok('daily quiz quest is complete and claimable',await p.evaluate(()=>!!document.querySelector('[data-qc*=":qd1"]')));
+await p.click('[data-qc*=":qd1"]');
+ok('claim awards +15 XP and shows Claimed',await p.evaluate(()=>S.xp===15&&document.querySelector('#quests').innerText.includes('Claimed')));
+ok('claiming does not count as a study day',await p.evaluate(()=>S.days.length===4));
+await p.evaluate(()=>{const k=Object.keys(S.mis).find(x=>x.includes(':qd1'));document.querySelector('#quests');S.mis[k]=1;save();render()});
+ok('cannot claim twice',await p.evaluate(()=>!document.querySelector('[data-qc*=":qd1"]')&&S.xp===15));
+await p.evaluate(()=>{const d=FO().log;d['2026-11-09']={m:0,b:3,early:0,left:0,xpb:0};d['2026-11-10']={m:0,b:2,early:0,left:0,xpb:0};save();render()});
+ok('weekly focus quest completes at 5 blocks across days',await p.evaluate(()=>!!document.querySelector('[data-qc*=":qw3"]')));
+await p.click('[data-qc*=":qw3"]');ok('weekly claim +40 XP',await p.evaluate(()=>S.xp===55));
+await p.evaluate(()=>{S.mis={};S.xp=0;save()});
+await p.clock.fastForward(8*86400000);await p.evaluate(()=>render());
+ok('next week resets weekly quests (new period key)',await p.evaluate(()=>qWk()==='2026-11-16'&&qAll()[1][2][0][2]===0));
+ok('forged claim for an unfinished quest is refused',await p.evaluate(()=>{const key='q:'+qAll()[2][1]+':qm3';document.body.insertAdjacentHTML('beforeend','<button id="fk" data-qc="'+key+'">x</button>');document.querySelector('#fk').click();return S.xp===0}));
+await p.setViewportSize({width:390,height:800});await p.evaluate(()=>render());
+ok('no sideways scroll at 390 px',await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ok('no page errors',!errs.length,errs.join());await b.close()})();
+// achievements (separate session)
+(async()=>{const b=await chromium.launch();const p=await b.newPage();const errs=[];p.on('pageerror',e=>errs.push(e.message));
+await p.goto('file://'+process.cwd()+'/lumio.html');const ok=(n,c,x='')=>console.log(c?'PASS':'FAIL',n,x);
+await p.evaluate(()=>{S.cat="school";S.board="CBSE";S.cls=CLS.indexOf("Class 8");S.band=bandOf(S.cls);S.name="T";S.mis={};save()});
+const st=()=>p.evaluate(()=>Object.fromEntries(ACH.filter(a=>/Quest|Weekly champion|Monthly master/.test(a[0])).map(a=>[a[0],a[2]()>=a[3]])));
+let s=await st();ok('quest achievements locked at start',Object.values(s).every(v=>!v)&&Object.keys(s).length===4);
+await p.evaluate(()=>{S.mis["q:d2026-11-11:qd1"]=1;S.mis["q:w2026-11-09:qw1"]=1});s=await st();
+ok('claiming a daily and a weekly unlocks Finisher and Weekly champion only',s['Quest finisher']&&s['Weekly champion']&&!s['Monthly master']&&!s['Quest hunter']);
+await p.evaluate(()=>{for(let i=0;i<10;i++)S.mis["q:m2026-11-01:x"+i]=1});s=await st();
+ok('10 claims unlock Monthly master and Quest hunter',s['Monthly master']&&s['Quest hunter']);
+await p.evaluate(()=>{V="ach";render()});ok('achievements page lists them without errors',await p.evaluate(()=>document.body.innerText.includes('Quest hunter'))&&!errs.length,errs.join());await b.close()})();

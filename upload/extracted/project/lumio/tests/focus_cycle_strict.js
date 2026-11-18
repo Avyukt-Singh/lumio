@@ -1,0 +1,37 @@
+const {chromium}=require(require('child_process').execSync('npm root -g').toString().trim()+'/playwright');
+const url='file:///home/claude/lumio/lumio.html';
+const boot=async(b,opts={})=>{const p=await b.newPage({viewport:{width:1200,height:800}});p.setDefaultTimeout(4000);p._errs=[];p.on('pageerror',e=>p._errs.push(e.message));
+ if(opts.mock)await p.addInitScript(()=>{window.__n=[];window.__audio={buf:0,osc:0,stop:0};window.Notification=function(t,o){window.__n.push(t)};Notification.permission='granted';Notification.requestPermission=async()=> 'granted';
+  window.AudioContext=function(){this.sampleRate=8000;this.state='running';this.destination={};this.resume=()=>{};const node=()=>({connect(){},disconnect(){},start(){},stop(){window.__audio.stop++},gain:{value:0},frequency:{value:0}});this.createGain=()=>node();this.createBufferSource=()=>{window.__audio.buf++;return Object.assign(node(),{})};this.createBiquadFilter=()=>node();this.createOscillator=()=>{window.__audio.osc++;return node()};this.createBuffer=(c,l)=>({getChannelData:()=>new Float32Array(l)})}});
+ await p.clock.install({time:new Date(2026,9,30,10,0,0)});await p.goto(url);await p.clock.runFor(300);
+ await p.getByText('School Student').click();await p.locator('#root select').nth(0).selectOption({label:'CBSE'});await p.locator('#root select').nth(1).selectOption({label:'Class 11'});await require('./_ob.js').finish(p);await p.clock.runFor(300);return p};
+const T=async p=>(await p.locator('#root').innerText()).replace(/\n+/g,' | ');
+const st=(p,e)=>p.evaluate(e);
+(async()=>{const b=await chromium.launch();
+// 1-2 basic cycle
+let p=await boot(b,{mock:1});
+await p.locator('#fpill').click();await p.clock.runFor(100);
+console.log('1 idle view:',/Pick a focus style/.test(await T(p)),'| pill:',await p.locator('#fpill').innerText());
+await p.locator('[data-fo="start"]').click();await p.clock.runFor(1500);
+console.log('2 running: timer',await p.locator('#ftime').innerText(),'| pill',await p.locator('#fpill').innerText());
+await p.clock.fastForward('25:05');await p.clock.runFor(1500);
+const log=await st(p,"JSON.stringify(fDay())"),run=await st(p,"JSON.stringify(FO().run&&{k:FO().run.kind,m:FO().run.mins})");
+console.log('3 completed: log',log,'| next run',run,'| xp',await st(p,"S.xp"),'| modal:',/Focus block complete/.test(await T(p)),'| notification:',await st(p,"window.__n.join(',')"));
+await p.locator('[data-act="closec"]').click().catch(()=>{});
+console.log('4 achievement Focus starter unlocked:',await st(p,"unlocked().length>0 && ACH.filter(a=>a[2]()>=a[3]).some(a=>a[0]==='Focus starter')"));
+await p.clock.fastForward('03:05');await p.clock.runFor(1500);console.log('5 break over -> idle:',await st(p,"FO().run===null"),'| msg:',(await T(p)).match(/Break over[^|]*/)?.[0]);
+console.log('errs',p._errs);await p.close();
+// strict mode
+p=await boot(b,{mock:1});
+await p.locator('#fpill').click();await p.clock.runFor(100);await p.locator('#fo-strict').check();await p.clock.runFor(100);
+await p.locator('[data-fo="start"]').click();await p.clock.runFor(1200);
+await p.locator('.nb',{hasText:'Practice'}).click();await p.clock.runFor(100);console.log('6 strict: games blocked:',/Focus time/.test(await T(p)),'| owl on block screen:',await p.locator('img[alt*="owl, thinking"]').count()>0);
+await p.locator('.nb',{hasText:'Leaderboard'}).click();await p.clock.runFor(100);console.log('7 leaderboard blocked:',/Focus time/.test(await T(p)));
+await p.locator('.nb',{hasText:'Study'}).click();await p.clock.runFor(100);console.log('8 study open:',!/Focus time/.test(await T(p)));
+await p.locator('#fpill').click();await p.clock.runFor(100);await p.locator('[data-fo="exit"]').click();await p.clock.runFor(1200);
+console.log('9 exit wait: button',await p.locator('#fexit').innerText(),'disabled:',await p.locator('#fexit').isDisabled());
+await p.clock.runFor(10500);console.log('10 after 10s: button',await p.locator('#fexit').innerText(),'disabled:',await p.locator('#fexit').isDisabled());
+await p.locator('#fexit').click();await p.clock.runFor(200);console.log('11 ended early: log',await st(p,"JSON.stringify(fDay())"),'| run',await st(p,"FO().run"));
+await p.locator('.nb',{hasText:'Practice'}).click();await p.clock.runFor(100);console.log('12 games open again:',!/Focus time/.test(await T(p)));
+console.log('errs',p._errs);await p.close();
+await b.close()})().catch(e=>console.log('FAIL',e.message.split('\n').slice(0,3).join(' / ')));

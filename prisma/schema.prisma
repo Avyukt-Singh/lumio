@@ -1,0 +1,114 @@
+// Lumio 2.0 Prisma schema (SQLite). Chunk 5A: additive auth models on top of
+// the existing User/Post tables — the original User columns (id, email, name,
+// createdAt, updatedAt) are kept; every auth addition is a new nullable or
+// defaulted column, never a drop (the db:push script accepts data loss only
+// for additive changes by design; do not remove models here).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique // stored lowercased and trimmed
+  name              String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  // ---- chunk 5A additions (additive) ----
+  passwordHash      String? // null for passwordless-only accounts; "scrypt$N$r$p$salt$hash"
+  emailVerifiedAt   DateTime?
+  emailOwner        String    @default("self") // "self" | "guardian"
+  ageBand           String? // matches Band in content.ts
+  guardianConsentAt DateTime? // set when a guardian email verified
+  aiEnabled         Boolean   @default(false) // learner/guardian opt-in (Phase 2)
+  failedAttempts    Int       @default(0)
+  lockedUntil       DateTime?
+
+  sessions      Session[]
+  recoveryCodes RecoveryCode[]
+}
+
+model Post {
+  id        String   @id @default(cuid())
+  title     String
+  content   String?
+  published Boolean  @default(false)
+  authorId  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// String "enum" values (SQLite) live as exported constants in src/lib/auth/constants.ts:
+//   purpose: "signup" | "login" | "reset" | "delete"
+model EmailOtp {
+  id         String    @id @default(cuid())
+  email      String
+  purpose    String
+  codeHash   String // HMAC-SHA256(AUTH_SECRET, email:purpose:code) — never the code
+  attempts   Int       @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+  ipHash     String?
+
+  @@index([email, purpose])
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  userId     String
+  tokenHash  String   @unique // SHA-256 of the 32-byte token — token itself is only in the cookie
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+  lastSeenAt DateTime @default(now())
+  userAgent  String? // truncated to 120 chars
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model RecoveryCode {
+  id       String    @id @default(cuid())
+  userId   String
+  codeHash String // SHA-256 of the XXXX-XXXX code, each single-use
+  usedAt   DateTime?
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ---- chunk 5B additions (Phase 2, additive) ----
+
+// Budget ledger for the AI gateway. One row per (day, userId, feature);
+// `day` is an ISO yyyy-mm-dd in the app timezone. Aggregate per-user/day
+// caps and the global daily cap are computed by summing these rows.
+model AiUsage {
+  id       String   @id @default(cuid())
+  day      String
+  userId   String
+  feature  String // studybuddy | mistake | notes | practice | plancoach | codelab | coachline
+  calls    Int      @default(0)
+  tokensIn Int      @default(0)
+  tokensOut Int     @default(0)
+
+  @@unique([day, userId, feature])
+  @@index([day])
+}
+
+// "Report a problem" control on every AI surface. Stores the minimum needed
+// to debug: feature, a hash of the offending output, and the learner's
+// optional note. Prompt text is NOT stored beyond a truncated snippet hash.
+model AiReport {
+  id        String   @id @default(cuid())
+  userId    String?
+  feature   String
+  outputHash String
+  note      String?
+  createdAt DateTime @default(now())
+}

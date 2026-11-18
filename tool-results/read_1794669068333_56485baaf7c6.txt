@@ -1,0 +1,252 @@
+    14→2. **Upgrade.** The gaps listed in Section 4 are closed.
+    15→3. **Design.** The interface is the product of the UI UX Pro protocol in Section 2 and the brand lock in Section 6, and passes the anti-slop review.
+    16→4. **Honesty.** Nothing on screen pretends to be official, verified, social or AI-free/AI-powered when it is not (Rule R1).
+    17→5. **Resilience.** The app is fully usable with no backend, no API keys and no network after first load. Every external dependency fails soft (Section 8).
+    18→6. **Evidence.** You ship the test suite, an accessibility report, Lighthouse results and a parity table with real pass/fail status.
+    19→
+    20→## 0.5 Capstone scope: what this project is and is not (overrides conflicting text elsewhere)
+    21→
+    22→**This is a capstone (academic) project, not a production deployment.** It is graded on working, visible features, honest engineering, design quality and a convincing demo — not on production hardening. The consequences are stated once here so the rest of this document can stay as written.
+    23→
+    24→**1. Hidden infrastructure that no normal user can see is cut.** Wherever the following appear in this document (Sections 1, 5, 8, 10.3, 11, 13, 14, 15), that specific requirement is void for this build:
+    25→
+    26→- Production security and privacy engineering: the original body of Section 9 (threat model, OWASP ASVS, CSP/HSTS/security headers, authorisation and IDOR test suites, CSRF and XSS fuzz tests, SSRF, supply chain, SBOM, DPDP compliance engineering, breach-response runbook, audit log, admin moderation queue).
+    27→- Encryption and hardening beyond the minimum: argon2id parameter documentation, session rotation, CSRF tokens, device-list revoke, breached-password checks, CAPTCHA, rate-limiting infrastructure, 'refuse insecure production settings', HTTPS-only enforcement, build-time secret scanning.
+    28→- Real paid or registration-heavy messaging: TRAI DLT SMS templates and SMS pumping defence, Web Push with VAPID, SPF/DKIM/DMARC, bounce and complaint webhooks, suppression lists. Visible substitutes stay: email verification, recovery codes, in-app and service-worker notifications while the app is open, a fake push adapter.
+    29→- Operational machinery: nightly backups and restore drills, Prometheus/Sentry/observability, k6 load testing, Postgres/Redis production paths, object storage with signed URLs, virus scanning, EXIF and decompression-bomb defences, Docker production deployment guides.
+    30→- Keep R5's **spirit** only: no ads, no trackers, no dark patterns, kind tone, age-appropriate language, and guardian consent kept as the UI flow it already is. The compliance engineering and legal language around it are cut.
+    31→
+    32→**2. Minimal auth is in, because accounts are a visible feature.** Implement simple, honest auth: password hashing with a standard library function, a basic session token in an httpOnly cookie, simple lockout after repeated failed attempts, recovery codes, and **email verification on sign-up** (a free provider, or the fake/console adapter in development). Nothing more.
+    33→
+    34→**3. Free-tier rule.** Every external API or service actually used in the final build must be free to use: no paid plans, no paid registration, no paid quotas. If a capability needs a paid key, it ships fake-only, with its real adapter documented but disabled. Free providers already in scope (Wikimedia, Open-Meteo, the YouTube IFrame embed, self-hosted Pyodide, Mailpit locally) stay.
+    35→
+    36→**4. Visible features are not cut by any of the above.** Anything a normal user can see and feel stays: honest labelling (R1), all games and labs, the offline PWA, three themes, accessibility, guardian summary, friend codes, leaderboard and league, focus rooms, email verification, recovery codes, export and import, and the degradation messages. When in doubt: a feature visible to the learner is in scope; an invisible backend property is out of scope.
+    37→
+    38→**Precedence.** This section wins over any conflicting sentence elsewhere in the document. Checklist items in Sections 13 and 15 that refer to cut items are read as satisfied by their visible substitutes or removed from the build.
+    39→
+    40→## 1. Operating rules (non-negotiable)
+    41→
+    42→- **R1 Truth in the UI.** This is the prototype’s best trait; keep and strengthen it. Every learning item carries provenance (author, source, licence, review status). Never invent official links, chapter lists, marks, rankings, friends, testimonials, user counts or ‘official’ badges. Sample content, AI-generated content and unreviewed content are labelled as such on screen. Official board links are validated by a build-time link checker; if a link cannot be verified, omit it and say so in `docs/INTEGRATIONS.md`.
+    43→- **R2 No secrets in the client.** API keys, signing secrets and provider credentials exist only on the server (or in a serverless function). The browser never calls a paid or keyed API directly. Provide `.env.example`; never commit real values.
+    44→- **R3 Adapters for everything external.** Each external service sits behind a typed interface with at least a real adapter and a deterministic fake adapter. The fake adapter is the default in dev and tests. See Section 8.
+    45→- **R4 Fail soft.** If a service is down, unconfigured, rate-limited, over budget or blocked by the browser, the learner sees a calm, specific message and a working alternative, never a blank screen or a stack trace.
+    46→- **R5 Minors first.** Most users are children. Apply data minimisation, no third-party trackers or ads in any learner flow, parental consent flows, and age-appropriate language. Align with India’s Digital Personal Data Protection Act 2023 and its Rules (children are under 18; verifiable parental consent; no tracking or behavioural monitoring of children). Verify current commencement dates and obligations before claiming compliance, and state clearly that this is engineering alignment, not legal advice.
+    47→- **R6 Accessibility is a ship gate.** WCAG 2.2 AA, keyboard-complete, screen-reader tested where possible, reduced-motion respected, colour never the only signal, touch targets at least 44 px (larger for the youngest band).
+    48→- **R7 No slop.** See the anti-slop checklist in Section 6.6. Generic gradient-card dashboards, emoji used as icons, unexplained lorem-style microcopy, and default framework look are failures.
+    49→- **R8 No stubs.** No lorem ipsum, no TODO in shipped paths, no buttons that do nothing. If something cannot be built, hide it or label it ‘Not available yet’ with the true reason, and list it in `docs/KNOWN_LIMITS.md`.
+    50→- **R9 Test what you build, report what you could not.** Run the code. If your environment cannot run something (real devices, real SMS, paid APIs), say so explicitly and provide a manual test sheet.
+    51→- **R10 Your knowledge of third-party APIs is dated.** Prices, quotas, endpoints and policies change. Before depending on any service, read its current official documentation if you can browse. If you cannot, isolate it behind its adapter and mark the entry `VERIFY` in `docs/INTEGRATIONS.md`.
+    52→- **R11 Few questions.** State assumptions in `docs/ASSUMPTIONS.md` and proceed. Ask at most one batch of five questions, and only for true blockers.
+    53→- **R12 Vertical slices, complete files.** Build thin end-to-end slices (UI, state, storage, tests) rather than layers. Never output files with ellipses or ‘rest unchanged’ placeholders.
+    54→- **R13 Never lose learner data.** Ship a migration that imports a prototype `lumio-s1` localStorage export and a prototype `accounts.json`, `social.json` and `leaderboard.json`. Add export and import (JSON) for all users.
+    55→- **R14 Licences.** Use only content you may use. NCERT, CBSE, CISCE and state-board materials are copyrighted: link to them, never scrape or redistribute them. Open material (for example OpenStax under CC BY, Wikipedia under CC BY-SA) needs correct attribution stored in the content’s provenance fields.
+    56→
+    57→## 2. Mandatory design intelligence: the UI UX Pro skill
+    58→
+    59→The user attached the actual skill pack: `SKILL.md`, `ui-reasoning.csv`, `colors.csv`, `typography.csv`, `charts.csv`, `ux-guidelines.csv`. You must use it as the evidence base for design decisions and follow its own workflow. Do not substitute your habits.
+    60→
+    61→### 2.1 What the files actually contain (columns confirmed against the real files)
+    62→
+    63→| File | Confirmed contents | Where you must consult it |
+    64→| --- | --- | --- |
+    65→| `SKILL.md` | A searchable design-intelligence skill: a query script (`scripts/search.py`) with modes `--design-system`, `--domain <domain>`, `--stack <stack>`, `--persist` (writes `design-system/<slug>/MASTER.md` plus per-page overrides), design dials `--variance`/`--motion`/`--density`, a 10-priority rule table (accessibility and touch first, charts last), and a pre-delivery checklist in `references/pro-rules.md` | Follow its Workflow section exactly and in order before writing any UI code |
+    66→| `ui-reasoning.csv` | 192 product types. Columns: UI_Category, Recommended_Pattern, Style_Priority, Color_Mood, Typography_Mood, Key_Effects, Decision_Rules (JSON if/then constraints), Anti_Patterns, Severity, Reasoning, Confidence | First: overall pattern, style priority and anti-patterns per audience (row mapping in 2.2) |
+    67→| `colors.csv` | 192 token-ready palettes. Columns: Product Type, Primary, On Primary, Secondary, On Secondary, Accent, On Accent, Background, Foreground, Card, Card Foreground, Muted, Muted Foreground, Border, Destructive, On Destructive, Ring, Notes | Token design per theme and per density profile; the column names are the token roles |
+    68→| `typography.csv` | 74 font pairings. Columns: Font Pairing Name, Category, Heading Font, Body Font, Mood/Style Keywords, Best For, Google Fonts URL, CSS Import, Tailwind Config, Notes | Type scale and font choice per band; must be reconciled with Devanagari (confirmed gap, see 2.3) |
+    69→| `charts.csv` | 25 chart types. Columns: Data Type, Keywords, Best Chart Type, Secondary Options, When to Use, When NOT to Use, Data Volume Threshold, Color Guidance, Accessibility Grade, Accessibility Risk, Accessibility Notes, A11y Fallback, Library Recommendation, Interactive Level | Every chart in Progress, Focus analytics, quests, mastery map, league and parent views; cite the row number |
+    70→| `ux-guidelines.csv` | 120 numbered guidelines. Columns: Category, Issue, Platform, Description, Do, Don't, Code Example Good, Code Example Bad, Severity | Per-screen UX audit and a pre-merge checklist |
+    71→
+    72→### 2.2 Required process (the skill's own workflow applied to Lumio)
+    73→
+    74→1. Write a one-page product brief (audiences, jobs to be done, emotional goals, constraints).
+    75→2. Read `SKILL.md` completely and run its search script by its full path (replace `${CLAUDE_PLUGIN_ROOT}` with the folder where the pack lives; try `python3` if `python` is missing). Never invent search output: on 0 results retry once with a narrower query or an explicit `--domain`, then fall back to the priority table in `SKILL.md` and label the recommendation as a built-in default, not a database match. One dominant intent and 2–5 meaningful terms per query; a separate stack query never replaces the UX outcome search.
+    76→3. Run the design-system query for this product and persist it with the Master + overrides pattern (SKILL.md Steps 2 and 2b):
+    77→   `python3 <skill-folder>/scripts/search.py "gamified education learning app school students" --design-system --persist -p "Lumio" --output-dir <project-root>`
+    78→   Then re-run per **density profile** with the design dials and a `--page` override each: young band `--density 3 --motion 6` (spacious, playful, 56 px targets); school and dropper `--density 5`; adult `--density 6 --motion 3` (compact, minimal). Never pass `--force`; read an existing `MASTER.md` first. Retrieval while building: read `MASTER.md`, then the page override if it exists — the page file wins.
+    79→4. Consult these **confirmed rows** and cite file plus row number in the Decision Log:
+    80→   - `ui-reasoning.csv` row 9 (Educational App: Recommended_Pattern Feature-Rich Showcase, Style_Priority Claymorphism + Micro-interactions, Decision_Rules `if_gamification → add-progress-animation`, `if_children → increase-playfulness`, Anti_Patterns Dark modes + Complex jargon). Also rows 43 (Online Course), 78 (Language Learning), 103 (Flashcard & Study Tool), 107 (Timer & Pomodoro, for Focus), 121 (Trivia & Quiz Game), 152 (Kids Learning) wherever a screen matches that product type.
+    81→   - `colors.csv` rows 9 (Educational App: Primary #4F46E5, Accent orange), 103 (Flashcard & Study Tool: Primary #7C3AED, correct green #059669), 121 (Trivia & Quiz: blue + gold leaderboard), 152 (Kids Learning: blue + play yellow + fun pink), 107 (Timer & Pomodoro: focus red on dark, break green) for the Focus screen. Rows 9 and 103 agree with the brand lock seeds #4F46E5 and #7C3AED: record that agreement in the Decision Log instead of inventing new hex values, and treat the CSV's role columns (Primary, On Primary, Muted Foreground, Ring, ...) as the token skeleton.
+    82→   - `typography.csv` row 13 (Friendly SaaS: Plus Jakarta Sans — matches the brand sheet) for the school and adult profiles; row 45 (Kids/Education: Baloo 2 + Comic Neue) or row 6 (Playful Creative: Fredoka + Nunito) for the young band; row 48 (Accessibility First: Atkinson Hyperlegible) for the dyslexia-friendly comfort setting.
+    83→   - `charts.csv`: consistency calendar and mastery heatmap → row 5 (Heat Map; calendar heatmaps max 365 cells per SVG; print values or symbols in cells); XP and accuracy trends → row 1 (Line; fewer than 4 points use a stat card instead); completion versus mastery → row 19 (Waffle) or row 2 (Bar, sorted descending); planned versus done toward the exam date → row 8 (Gauge/Bullet) or row 13 (Waterfall); league and leaderboard comparisons → row 2 (Bar); Spaceship Δv budget → row 2. Use each row's **A11y Fallback** column as the text or table alternative, and its **Library Recommendation** column when choosing between Recharts, visx and D3.
+    84→5. For implementation detail, use the stack query (`--stack react`; `--stack html-tailwind` for chip, badge and text-layout bugs) only after the UX outcome search, per SKILL.md's query contract.
+    85→6. Produce `docs/DESIGN.md` containing a **Decision Log** table with these columns: Decision | Evidence (file name and row number or exact quote from the skill) | Alternatives rejected | Brand-lock reconciliation. At least one entry per: overall style, each theme palette, type pairing, icon style, motion style, each chart type used, each major pattern (navigation, onboarding, quiz, dashboard, game shell, empty states).
+    86→7. Generate the design tokens (colour, type scale, spacing, radius, elevation, motion durations and easings, z-index) from those decisions into a single source of truth (`packages/ui/tokens.ts` exported to CSS variables). Map the `colors.csv` role columns directly to token names. No ad hoc hex codes in components.
+    87→8. Apply `ux-guidelines.csv` as a screen-by-screen audit. Commit `docs/UX_AUDIT.md`: a table of screen × guideline ID (1–120) with Pass, Fail-fixed or Not-applicable (with reason). High-severity failures block the phase. Give special attention to rows 100–108 (WCAG 2.2: focus not obscured, 24 CSS px web target minimum, dragging-movement alternatives, accessible authentication), row 112 (text reflow) and row 19 (content jumping). Row 22 sets the web minimum at 24 CSS px; our own standard stays at 44 px (56 px for the young band).
+    88→9. For every chart, cite the `charts.csv` row that justifies the chart type, and add the row's text or table alternative for screen readers.
+    89→10. At the end of every phase, re-read the guideline rows you touched, run the anti-slop review (Section 6.6), and before delivering app UI run the pre-delivery checklist in `references/pro-rules.md`.
+    90→
+    91→### 2.3 Conflict and gap policy (with the conflicts we already know about)
+    92→
+    93→- **Brand is locked** (Section 6.1): the mascot, logo, name, tagline, the family of indigo and violet primaries, and the three time-of-day themes. Everything else is open to the skill. When a skill recommendation conflicts with the brand lock, brand wins for identity elements and the skill wins for everything else. Record each conflict in the Decision Log. Conflicts already visible in the files, each needing its own Decision Log entry:
+    94→  - `ui-reasoning.csv` row 9 lists **Dark modes** as an anti-pattern, but the brand lock requires a night theme: brand wins for the night theme; apply the row's remaining guidance (playful colours, clear hierarchy, soft press ~200 ms) to light themes.
+    95→  - `colors.csv` gives one light palette per product type, while Lumio needs three time-of-day themes: keep the row's role structure and re-map the roles per theme (morning/evening/night), passing the AA contrast audit in Section 6.1.
+    96→  - `ui-reasoning.csv` rows for quiz and game products (121, 122, 125) recommend dark or high-saturation treatments that suit the games hub, not the young learner's home: apply them inside the games hub only.
+    97→- **Devanagari is mandatory, and the skill cannot supply it.** `typography.csv` covers Japanese, Korean, Chinese, Arabic, Thai and Hebrew but has **no Devanagari pairing** — this is a confirmed gap, not a reason to skip Hindi. Keep the skill pairing for Latin text and add a matching Devanagari family (for example Noto Sans Devanagari or a better-fitting open-licence face) as a clearly labelled provisional addition with mixed Hindi and English line-height and clipping tests.
+    98→- **Never fabricate skill content.** If a file or a needed row is missing or unreadable, stop that decision, say which file or row, and use clearly labelled provisional values that you replace once the file is available.
+    99→
+   100→## 3. The prototype, reverse-engineered (parity spec)
+   101→
+   102→Read the code yourself; this section tells you where to look and what it does. Practical tip: `lumio/lumio.html` is one file (about 290 KB: roughly 235 KB of JavaScript, 9 KB of CSS, embedded base64 WebP images). Extract the `<script>`, strip `data:image/...;base64,...` strings, and run Prettier to read it. The server is `lumio/server.js` (dependency-free Node). Also read `README.md`, `HANDOFF.md`, `TESTING.md` and skim `tests/` (about 100 Playwright scripts; they encode the intended behaviour).
+   103→
+   104→### 3.1 Product
+   105→
+   106→AI-free, offline-first, no-cost learning app. Everything lives in the browser (`localStorage` key `lumio-s1`, one JSON object). An optional server provides leaderboard, social features, accounts and parent links. Content is **Lumio-written sample material**, labelled as such; there is no official curriculum, textbook or past-paper content, and the app says so.
+   107→
+   108→### 3.2 Learner types, bands and navigation
+   109→
+   110→- `S.cat` is `school`, `dropper` or `above`. `S.band` is one of `young` (Nursery to Class 5), `middle` (6 to 8), `sec` (9 to 10), `senior` (11 to 12), `dropper`, `above`.
+   111→- Navigation keys: `home`, `study`, `games`, `progress`, `ach`, `board`. The `young` band sees only home, study, games, ach. Other screens are reached from within: `focus`, `social`, `account`, `settings`, `guardian` (parent summary), and each game.
+   112→- Themes by time of day, hour boundaries configurable (`S.sch=[6,17,19]`): **morning** 06:00 to 16:59 (light, indigo), **evening** 17:00 to 18:59 (warm peach and red-orange), **night** 19:00 to 05:59 (dark). Manual override. A ‘calm’ mode disables animation (and honours `prefers-reduced-motion`). Collapsible sidebar on desktop; bottom navigation on phones.
+   113→
+   114→### 3.3 Onboarding wizard (per learner type, every step validated)
+   115→
+   116→- **School:** name (optional); board (CBSE, ICSE/CISCE, UP Board, Other State Board, NIOS, Other/International); state or union territory (for Other State Board; auto for UP Board); curriculum text for international; class (Nursery to 12); academic year (defaults to current Indian academic year); preferred language; subjects (board-, class- and state-aware catalogue plus custom); prescribed textbooks; school start and end; dinner; bedtime; other commitments; study time outside school (Classes 10 to 12, sets a 1.5x target); next school exam and date; competitive-exam goal and date (from Class 9); learning goal; complementary subject; guardian step by age (Nursery to 5: a guardian must confirm and summary sharing defaults on; 6 to 8: recommended, default on; 9 to 12: optional, default off).
+   117→- **Dropper:** target exam (JEE Main, JEE Advanced, NEET, CUET, Other) and date; previous attempts; subjects; syllabus covered; strong and weak areas; previous preparation; mocks taken and latest score with total; current and available study hours; best time of day; wake time; bedtime; dinner; commitments; goals.
+   118→- **Above Class 12:** type of learner; area of interest (24 topic areas plus custom goal); level; goal; target date; hours per week; preferred time; bedtime; commitments; topics. Never asks for a parent’s phone number.
+   119→- Validation: required fields, number ranges, future dates only, school end after start, mock score not above total. Answers generate the study schedule automatically; if the day is too full the app says so instead of guessing. Settings, Learning profile reopens the same wizard pre-filled and keeps all progress.
+   120→
+   121→### 3.4 Study Area (the learning loop)
+   122→
+   123→- **Chapter path** with four states: locked, available, completed, mastered. A chapter unlocks when the previous one is completed (best score of at least 1). Header search across chapters.
+   124→- **Chapter page:** source line (who wrote it, not official), glossary, notes with **Listen** (read-aloud: sentence by sentence, pause/resume, saved speed, Hindi voice for Devanagari text), key points, mind map (built from notes, tap to expand), flashcards (tap to flip), revision checklist, quiz with per-question explanations.
+   125→- **Consolidation:** two revision sessions per chapter; mock tests with review of missed questions and ‘flag’ of weak chapters (clearing a flagged chapter is rewarded); a 15-minute **complementary subject** session unlocked by a completed chapter.
+   126→- **Practice engine:** spaced-repetition flashcards (Leitner, 5 boxes at 1, 2, 4, 8, 16 days, self-rated, cards built from attempted chapters, XP once per day); weak-topic hub; adaptive practice; mixed-topic revision (interleaving); legendary challenge; timed 60-second drills; error-analysis lab (five worked solutions); remedial lesson built from the learner’s own misses; mistake notebook with tags (concept gap, careless slip, calculation error, forgot the fact); question-paper section that holds only official links and a self-reported attempt log.
+   127→- **Utilities:** printable worksheet with answer key; local note upload (.txt, .md; PDFs rejected with a clear message); study reminder (browser notification while the tab is open); Study Video (paste a YouTube link, watch beside notes); Board and class guide with assessment patterns and confidence lines; CBSE Class 11 Physics outline with official facts and a link to the official PDF.
+   128→
+   129→### 3.5 Games and labs (eligibility by band; read `vGames` for the authoritative gates)
+   130→
+   131→Number Hop, Match the Pictures, Spell the Word, Sharp Eyes (odd-one-out and patterns), Capital Challenge, History Timeline, Pendulum Lab, Fraction Puzzles, Ecosystem Builder, Projectile Lab, Algebra Challenges, Virtual Chemistry Lab (balancing equations with live atom counts), Genetics Lab (Punnett squares), Budget Planner, Circuit Lab (series, parallel, target current), Engineering Lab (beam support forces by moments), Dataset Explorer (made-up data), Build Your Own Spaceship, Coding Lab (JavaScript in a Worker with 2 s limit; Python in Pyodide with 3 s limit; tests; hints; three debugging exercises), AI Lab and AI Fairness Lab (made-up data, overfitting and bias), Web Workspace (HTML and CSS with sandboxed live preview and a checked challenge). Each game awards XP once (typically +20 or +25 for five correct in a row; +25 for a passing code exercise). Physics models are intentionally simplified and say so on screen:
+   132→
+   133→- Rocket: dv = Isp × g0 × ln(m0 / m\_dry), with m\_dry = hull + engine mass × count + payload + 0.08 × fuel; thrust-to-weight = thrust × count / (m0 × g0). Engines (thrust kN, Isp s, mass t): Chem-S 3000 / 310 / 3, Hydro-X 1800 / 420 / 3.5, Ion-Z 5 / 3000 / 1. Missions: low Earth orbit from the ground needs dv at least 9.0 km/s and thrust-to-weight above 1.2; lunar transfer from orbit needs 3.2 km/s and thrust-to-weight above 0.005. A winning design exists (for example 2 Hydro-X, 220 t fuel, 2 t hull, 1 t payload). Keep that solvability as a test.
+   134→- Projectile, pendulum, Ohm’s law (series and parallel), beam moments, equation balancing (smallest whole numbers), Punnett crosses (nine verified): re-implement and unit test every formula.
+   135→
+   136→### 3.6 Core mechanics (must be preserved exactly unless Section 7 says otherwise)
+   137→
+   138→- **XP on quiz finish:** gain = max(0, score − previous best) × 10, plus 20 on the first scored attempt with score of at least 1. XP is for improvement only; repeating a perfect quiz gives nothing.
+   139→- **Mastery:** best score equal to the number of questions is mastered; best above 0 is completed. Progress separates completion from mastery.
+   140→- **Streak:** consecutive calendar days (device-local date) on which an XP-earning activity was completed; counts back from today, or from yesterday if today is not yet done. Opening the app does not count. Best streak is stored; milestones at 3, 7, 14, 30, 60 and 100 days.
+   141→- **Scheduler:** per-day session slots from `plan` (start, session length, number of sessions defaulting to the band goal, 15-minute gaps, optional 1.5x on Sundays). A chapter session is locked until its slot starts and counts once per new chapter. Busy windows are school hours and dinner (45 minutes). Reschedule moves missed sessions to the next free time that avoids busy windows and bedtime, and reports how many were dropped. Also: 7-day plan, month calendar of studied days, adaptive daily target from the last 7 days.
+   142→- **Weak-topic ranking** weights: 2 per missed question; 3 if quiz not passed, 1 if not perfect; 2 if flagged in a mock; 1 per missed flashcard; 2 if practice accuracy is below 60% over at least 3 attempts.
+   143→- **Adaptive practice:** difficulty level starts 0.5 (0.9 for legendary), rises on correct and falls on wrong; next question is the unseen one whose difficulty is closest to the level, with a penalty for repeating the same chapter; 8 questions (6 legendary). **Legendary challenge** unlocks after mastering two chapters, two lives, +40 XP on first win only.
+   144→- **Quests:** daily, weekly (week starts Monday) and monthly, computed from real activity, claimable once for XP, with four quest achievements.
+   145→- **Achievements (about 21):** quest finisher, weekly champion, monthly master, quest hunter, focus starter, steady focus, first lesson, first mastery, streak milestones 3/7/14/30/60/100, path complete, legend, flashcard habit, revision starter, mock tester, fix the gaps, any-light learner (finished quizzes in all three themes).
+   146→- **Focus (Lock-In wellbeing):** Pomodoro-style presets Short 15/3 (default for young and middle), Classic 25/5, Deep 45/10, Custom; 4-block cycle with a longer break; XP 5 per completed block, capped at 4 blocks per day; **Strict Mode** blocks Practice and Games, Leaderboard and Friends behind a mascot blocking screen and makes ending early a 10-second wait; auto-start when a timetable slot begins (only if the app is open, within the first 2 minutes); away detection through page visibility with a kind message; sessions survive reload; a block that ended while the app was closed for over 2 minutes is not counted; self-set daily time limit that shows a rest reminder and never locks; generated focus sounds (brown noise, rain-like noise, gentle tones) with Web Audio, no audio files; 7-day screen-time analytics. Timers use timestamps, not tick counts, so background-tab throttling cannot corrupt them.
+   147→- **Guardian summary:** consent flag, this-device printable weekly report; with accounts, a parent sees a summary only while the learner’s consent is on.
+   148→
+   149→### 3.7 Data model (browser)
+   150→
+   151→One JSON object `S`. Profile: `name, cat, board, state, intl, cls, band, subs, lang, year, exam, edate, compSub, weak, prev, goalTxt`. UI: `mode, sch, calm, col, owl`. Progress: `xp, days[], themes[], res{chapterId:{best,att,last}}` (chapterId is band plus chapter index), `used{date:n}, shift{date:min}, rs{date:slots}, plan{st,len,n,bed,cur,sun,sh1,sh2,dn}`. Practice: `fc{cardId:{b,d}}, rev, mocks[], wrong{chapterId+questionText:1}, flag, cleared, qs{id:{a,c}}, mt (mistake tags), mis (one-time awards and claimed quests), papers[], comp`. Tools: `fo` (focus object), `code`, `ships[]`, `chk`, `up` (uploaded notes), `rem, remd`. Social: `consent, dn, lbOut, lid`.
+   152→
+   153→Weakness to fix: wrong answers are keyed by the question’s text, so editing a question orphans its history. v2 uses stable question IDs.
+   154→
+   155→### 3.8 Prototype server (`server.js`)
+   156→
+   157→Dependency-free Node 18+, JSON files (`leaderboard.json`, `social.json`, `accounts.json`), atomic writes. Endpoints (all under the API prefix): `lb`; social `sync, state, add, accept, decline, remove, room/create|join|state|start|leave`; accounts `register, login, logout, me, delete, profile/set, phone/request, phone/verify, login/otp/request, login/otp/verify, recover/code, recover/otp/request, recover/otp/confirm, sync/pull, sync/push, parent/invite, parent/link, parent/unlink, parent/children, msg/send, msg/inbox, msg/read`.
+   158→
+   159→Behaviour to keep: friend codes with request, accept, decline, remove (max 30); shared friend streak; cooperative weekly friend quest (team 300 XP and both learning on 4 days); activity feed of milestones; weekly league of up to 10 learners in the same band ranked by weekly XP; focus rooms with a shared server-timed countdown, host-only start, up to 10 members, rooms expire after 6 hours; password hashing with scrypt; 30-day hashed session tokens; lockout after 5 wrong attempts; recovery codes (8, one-time, shown once); phone OTP (6 digits, 10-minute expiry, 5 tries, resend limits, no account enumeration); cross-device sync with merge (best scores, larger XP, union of days, flashcards by box and date, mocks, papers; schedule and settings come from the device that syncs; uploaded notes stay local); parent link by learner-created single-use invite code valid 24 hours; in-app messages with unread count; leaderboard counting at most 800 XP per account per day. Environment: `PORT, SOCDB, ACCDB, SMS_WEBHOOK_URL, OTP_GAP_MS, XP_DAY_CAP, RATE_PER_MIN (120), REGISTER_PER_HOUR (10), TRUST_PROXY, BACKUP_DIR, BACKUP_KEEP (14), BACKUP_EVERY_MS (6 h)`, plus `/healthz`, security headers, per-client rate limits and automatic backups.
+   160→
+   161→### 3.9 What the prototype could not do (your upgrade surface)
+   162→
+   163→Official syllabus, notes and question banks; AI tutor, document and image understanding, OCR, YouTube-to-notes, AI-generated lessons; real SMS, email and push; a managed database and hosting; true server-side XP verification; native app and website blocking; Hindi and Hinglish content; real device and Safari/Firefox testing; question banks of only two or three items per chapter, so adaptive practice and drills repeat quickly.
+   164→
+   165→## 4. Gap analysis: what must be better
+   166→
+   167→| Area | Prototype | Required in v2 |
+   168→| --- | --- | --- |
+   169→| Architecture | One 290 KB file, global mutable state, many document-level click listeners (attribute clashes such as `data-ob` vs `data-obw` already happened) | Typed, modular monorepo; routed feature modules; component library; no global listener collisions |
+   170→| Storage | One `localStorage` blob, about 5 MB cap, silent failure on save | IndexedDB with schema versions and migrations, quota handling, storage-persistence request, export and import, sync queue |
+   171→| Content | Two or three questions per chapter; a handful of chapters | Content schema, pipeline, review states, 15 to 40 items per shipped chapter, lazy-loaded content packs, calibrated difficulty |
+   172→| Integrity | Answer keys and XP computed in the browser | Server-graded ranked attempts and an XP ledger; unranked offline mode stays available |
+   173→| Time | UTC weeks on the server, device date in the browser | Learner time zone stored in the profile (default Asia/Kolkata); server computes days and Monday-start weeks in that zone |
+   174→| Server data | JSON files | SQL database, migrations, backups, HTTPS, httpOnly session cookies with CSRF protection |
+   175→| Notifications | Only while the tab is open | Web Push (VAPID), email and optional SMS digests with consent; honest handling of iOS (push needs an installed PWA) |
+   176→| AI | None | Optional AI layer (Section 8.3), fully grounded, labelled, budgeted and switchable off |
+   177→| Language | English; Hindi voice only for read-aloud | Hindi and Hinglish interface and content slots; Devanagari typography |
+   178→| Visuals | Emoji as icons, hand-written CSS, 10.5 px nav labels, little data visualisation | Design system from the skill, SVG icon set, charts chosen from `charts.csv`, minimum 12 px for any label |
+   179→| Offline | Works by being one file | Service worker, installable PWA, versioned offline content packs, update prompt |
+   180→| Python lab | Pyodide from a CDN at runtime | Self-hosted pinned Pyodide with integrity check, background preload on good networks, visible progress, cached |
+   181→| Fonts | Google Fonts at runtime | Self-hosted, subsetted, `font-display: swap` (privacy and offline) |
+   182→| Realtime | Focus rooms poll every 3 s | Server-Sent Events with polling fallback |
+   183→| Identity | Social features use unverified nicknames | Account-based identity, block and report, preset reactions only (no free chat) for minors |
+   184→| Tests | Chromium only; nine known-stale tests; selectors tied to markup | Chromium, Firefox and WebKit; stable `data-testid`; CI; a11y and visual tests |
+   185→
+   186→## 5. Target architecture
+   187→
+   188→### 5.1 Principles
+   189→
+   190→Local-first (the app works from IndexedDB alone), server optional, adapters for every external service, pure domain logic separated from UI and I/O, schema-validated at every boundary.
+   191→
+   192→### 5.2 Stack (decisive; deviate only with a written ADR)
+   193→
+   194→- TypeScript in strict mode everywhere; pnpm workspaces.
+   195→- **Web:** Vite, React 18, a typed router (React Router or TanStack Router), Tailwind CSS driven by the generated tokens, Radix UI primitives for accessible behaviour (dialog, tabs, popover, toast), Motion for animation (with reduced-motion handling), Zustand for UI state, TanStack Query for server state, Dexie for IndexedDB, `vite-plugin-pwa` (Workbox), KaTeX for maths, i18next for translations, MiniSearch for offline search, CodeMirror 6 for code editing (lighter and better on phones than Monaco), an SVG icon library chosen per the skill. Chart library chosen per `charts.csv` needs (Recharts, visx or D3).
+   196→- **API:** Node 20 or newer, Hono or Fastify, Zod validation with generated OpenAPI, Drizzle ORM. SQLite (libsql or better-sqlite3) by default and Postgres for production. Redis is optional (rate limits, queues) with in-process fallbacks. A small job queue for slow work (LLM, OCR, ASR, email) with an in-process fallback. Server-Sent Events for rooms and feeds.
+   197→- **Content:** YAML and Markdown sources validated by Zod, compiled to versioned JSON packs.
+   198→- **Quality:** Vitest, Testing Library, Playwright (Chromium, Firefox, WebKit), axe-core, Lighthouse CI, MSW for HTTP fakes, k6 for load.
+   199→- **Delivery:** Docker and docker-compose (web, api, database, MinIO for object storage, Mailpit for email), GitHub Actions, and a deployment guide for a free-tier host.
+   200→
+   201→### 5.3 Repository layout
+   202→
+   203→```
+   204→lumio/
+   205→  apps/
+   206→    web/               Vite + React PWA (src/app, src/features/*, public/)
+   207→    api/               HTTP API (src/routes, src/domain, src/jobs)
+   208→  packages/
+   209→    ui/                tokens.ts, components, Mascot, icons, chart wrappers
+   210→    schemas/           Zod schemas shared by web, api and content tools
+   211→    domain/            pure logic: xp, streak, mastery, scheduler, srs, adaptive, quests, focus
+   212→    adapters/          interface + real + fake for every external service
+   213→    content-tools/     validate, build, import, link-check, generate CLIs
+   214→  content/             source files by board / class / subject / chapter, with provenance
+   215→  e2e/                 Playwright suites
+   216→  legacy/              prototype importer and fixtures
+   217→  docs/                DESIGN, UX_AUDIT, ARCHITECTURE, INTEGRATIONS, CONTENT_GUIDE,
+   218→                       SECURITY, TESTING, KNOWN_LIMITS, ASSUMPTIONS, PARITY, ADR/
+   219→  docker-compose.yml  .env.example  .github/workflows/
+   220→```
+   221→
+   222→`packages/domain` has no I/O, no DOM and no clock access (time is injected), and has 100 percent branch coverage on XP, streaks, mastery, scheduling, spaced repetition, quests and focus rules.
+   223→
+   224→### 5.4 Event-sourced local-first data and sync
+   225→
+   226→Replace the prototype’s ad hoc `mergeState` with an append-only **event log**.
+   227→
+   228→- Every learner action is an immutable event: `id` (UUIDv7), `type`, `payload`, `deviceId`, `clientTime`, `tz`. Examples: `quiz.finished`, `card.reviewed`, `focus.block.completed`, `quest.claimed`, `game.won`, `session.rescheduled`.
+   229→- Current state (XP, streak, mastery, due cards, achievements) is a **projection** computed by pure functions in `packages/domain`. Monotonic values such as XP and best scores are derived, never set directly.
+   230→- Sync is the union of event sets, idempotent by event ID, so multi-device merge is automatic and safe. Settings and schedule fields use last-writer-wins per field with timestamps.
+   231→- Uploaded notes sync only if the learner opts in (object storage). Everything else is stored locally first and queued for sync with exponential backoff.
+   232→- Provide a one-time **legacy importer**: paste or upload a prototype `lumio-s1` export and it is converted to events, preserving XP, days, results, flashcards, mocks, mistakes and settings.
+   233→
+   234→### 5.5 Ranked and unranked play
+   235→
+   236→- **Unranked (default, offline):** graded locally, counts for personal progress, never for leagues or leaderboards.
+   237→- **Ranked (online, account required):** the server issues an attempt (item IDs without answer keys), grades each answer as it arrives, returns the explanation, and writes the XP ledger entry itself. Offline attempts are queued as `unverified` and excluded from leagues. Keep the daily XP cap and anomaly flags (the prototype capped at 800 XP per day).
+   238→
+   239→### 5.6 Time and locale
+   240→
+   241→Store the learner’s IANA time zone. A ‘day’ is the learner’s local calendar day; weeks start on Monday; the Indian academic year runs April to March. Format dates and numbers with `en-IN` and `hi-IN`. Never compare dates as strings without normalising zone.
+   242→
+   243→## 6. Design direction
+   244→
+   245→### 6.1 Brand lock (from the supplied images and the prototype)
+   246→
+   247→- **Name and tagline:** Lumio. *Learn · Practice · Grow.*
+   248→- **Mascot:** a purple owl with oversized eyes, orange beak and feet, and a black hoodie with a glowing ‘L’ and a four-point sparkle. Expressions on the sheet: happy, excited, curious, thinking, wink, surprised, sad, cool. Poses: standing, flying, reading, teaching, cheering, with backpack. The logo is the owl mark plus the ‘Lumio’ wordmark with a sparkle; the app icon is the owl on a dark navy rounded square.
+   249→- **Palette sheet A:** primary purple `#6C63FF`, secondary blue `#00D4FF`, accent pink `#FF6B9D`, accent yellow `#FFD166`, dark `#0B0F1A`, light `#F8FAFF`.
+   250→- **Palette sheet B:** primary `#4F46E5`, secondary `#7C3AED`, accent `#06B6D4`, highlight `#EC4899`, dark `#0F172A`, muted `#64748B`, background `#E0E7FF`, surface `#F8FAFC`.
+   251→- **Prototype theme seeds:** morning (background `#f4f3ff`, surface `#fff`, text `#1d1b3a`, muted `#6a678c`, line `#e3e0f7`, primaries `#4f46e5` and `#7c3aed`); evening (background `#fff1ea`, surface `#fffaf6`, text `#3a1d1d`, primaries `#c23b27` and `#9a3ab8`); night (background `#0f1024`, surface `#191a38`, text `#ecebff`, muted `#a3a1cf`, primaries `#6c8cff` and `#a78bfa`). Success `#16a34a` (night `#4ade80`), warning `#f59e0b` (night `#fbbf24`).
+   252→- **Type on the brand sheet:** Plus Jakarta Sans for headings, Inter for body. Treat as the preferred starting point that the skill may refine, always with a Devanagari companion.
+   253→- **Time-of-day wallpapers:** morning (bright floating-island castle), evening (warm sunset), night (stars and moon). Use optimised versions as optional hero backgrounds.
+   254→- **Voice:** warm, brief, encouraging, never guilt-tripping. Sheet examples: ‘Great job! You completed a lesson!’, ‘Keep going! Your streak is 5 days!’, ‘New achievement unlocked!’
+   255→
+   256→The seeds are starting points, not finished tokens. The prototype’s own audit found text and button colours below 4.5:1 in morning and evening and white-on-bright-gradient failures in night. Your tokens must pass an automated contrast audit in all three themes, for text, controls, focus rings and chart series.
+   257→
+   258→### 6.2 Three density profiles of one system
+   259→
+   260→|  | Young (Nursery to 5) | School and dropper (6 to 12) | Adult (above 12) |
+   261→| --- | --- | --- | --- |
+   262→| Type and targets | Large type, 56 px or bigger touch targets | Standard, 44 px targets | Compact, 44 px targets |
+   263→| Navigation | 4 items, icon plus word, no hidden menus | 5 to 6 items, bottom bar on phones | Sidebar on desktop, bottom bar on phones |
+
+[showing lines 14-263 of 651; use offset=264 with limit to continue reading]

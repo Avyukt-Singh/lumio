@@ -1,0 +1,13 @@
+const {chromium}=require(require('child_process').execSync('npm root -g').toString().trim()+'/playwright');
+(async()=>{const b=await chromium.launch();const p=await b.newPage({viewport:{width:1200,height:800}});p.setDefaultTimeout(4000);const errs=[];p.on('pageerror',e=>errs.push(e.message));
+const T=async()=>(await p.locator('#root').innerText()).replace(/\n+/g,' | ');
+await p.goto('file:///home/claude/lumio/lumio.html');await p.waitForTimeout(250);
+await p.getByText('School Student').click();await p.locator('#root select').nth(0).selectOption({label:'CBSE'});await p.locator('#root select').nth(1).selectOption({label:'Class 7'});await require('./_ob.js').finish(p);await p.waitForTimeout(250);
+await p.locator('.nb',{hasText:'Settings'}).click();const st=await T();
+console.log('consent text:',st.match(/[^|]*(guardian|parent)[^|]*/gi)?.slice(0,4));
+console.log('guardian btn before consent:',await p.locator('[data-go="parent"]').count());
+await p.locator('#cs').check();await p.locator('[data-act="sc2"]').click();await p.waitForTimeout(150);
+console.log('guardian btn after consent:',await p.locator('[data-go="parent"]').count());
+await p.locator('[data-go="parent"]').first().click();await p.waitForTimeout(200);
+console.log('PARENT:',(await T()).slice(230,1100));
+console.log(errs);await b.close()})().catch(e=>console.log('FAIL',e.message.split('\n')[0]));

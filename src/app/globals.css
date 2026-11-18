@@ -1,0 +1,343 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.night *));
+
+/*
+ * Lumio design tokens — generated from the UI UX Pro skill evidence
+ * (colors.csv rows 9/103/107/121/152, typography.csv rows 13/45/6/48,
+ * ui-reasoning.csv row 9) reconciled with the Lumio brand lock (master prompt 6.1).
+ * Three time-of-day themes; 33/33 contrast pairs pass WCAG AA (scripts/contrast-audit.mjs).
+ * The shadcn/ui variables below are mapped onto these tokens.
+ */
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-body);
+  --font-heading: var(--font-heading);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-soft: var(--success-soft);
+  --color-success-soft-foreground: var(--success-soft-foreground);
+  --color-gold: var(--gold);
+  --color-gold-soft: var(--gold-soft);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* ---------- MORNING (light, indigo) — brand seed + colors.csv row 9 ---------- */
+:root, .theme-morning {
+  --radius: 1rem;
+  --background: #F4F3FF;
+  --foreground: #1D1B3A;
+  --card: #FFFFFF;
+  --card-foreground: #1D1B3A;
+  --popover: #FFFFFF;
+  --popover-foreground: #1D1B3A;
+  --primary: #4F46E5;
+  --primary-foreground: #FFFFFF;
+  --secondary: #7C3AED;
+  --secondary-foreground: #FFFFFF;
+  --muted: #EBEEF8;
+  --muted-foreground: #475569;
+  --accent: #EA580C;
+  --accent-foreground: #000000;
+  --destructive: #DC2626;
+  --destructive-foreground: #FFFFFF;
+  --border: #E3E0F7;
+  --input: #C7D2FE;
+  --ring: #4F46E5;
+  --success: #15803D;
+  --success-foreground: #FFFFFF;
+  --success-soft: #DCFCE7;
+  --success-soft-foreground: #14532D;
+  --gold: #B45309;
+  --gold-soft: #FEF3C7;
+  --chart-1: #4F46E5;
+  --chart-2: #EA580C;
+  --chart-3: #15803D;
+  --chart-4: #7C3AED;
+  --chart-5: #B45309;
+  --sidebar: #FFFFFF;
+  --sidebar-foreground: #1D1B3A;
+  --sidebar-primary: #4F46E5;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #EEEDFB;
+  --sidebar-accent-foreground: #1D1B3A;
+  --sidebar-border: #E3E0F7;
+  --sidebar-ring: #4F46E5;
+  --hero-glow: rgba(79, 70, 229, 0.14);
+}
+
+/* ---------- EVENING (warm peach) — brand seed ---------- */
+.theme-evening {
+  --background: #FFF1EA;
+  --foreground: #3A1D1D;
+  --card: #FFFAF6;
+  --card-foreground: #3A1D1D;
+  --popover: #FFFAF6;
+  --popover-foreground: #3A1D1D;
+  --primary: #C23B27;
+  --primary-foreground: #FFFFFF;
+  --secondary: #9A3AB8;
+  --secondary-foreground: #FFFFFF;
+  --muted: #F6E4D8;
+  --muted-foreground: #6E4433;
+  --accent: #B4230F;
+  --accent-foreground: #FFFFFF;
+  --destructive: #B4230F;
+  --destructive-foreground: #FFFFFF;
+  --border: #EBD0C2;
+  --input: #E3B9A5;
+  --ring: #C23B27;
+  --success: #15803D;
+  --success-foreground: #FFFFFF;
+  --success-soft: #E7F7EC;
+  --success-soft-foreground: #14532D;
+  --gold: #92400E;
+  --gold-soft: #FEF0DC;
+  --chart-1: #C23B27;
+  --chart-2: #9A3AB8;
+  --chart-3: #15803D;
+  --chart-4: #B45309;
+  --chart-5: #6E4433;
+  --sidebar: #FFFAF6;
+  --sidebar-foreground: #3A1D1D;
+  --sidebar-primary: #C23B27;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #FAE8DC;
+  --sidebar-accent-foreground: #3A1D1D;
+  --sidebar-border: #EBD0C2;
+  --sidebar-ring: #C23B27;
+  --hero-glow: rgba(194, 59, 39, 0.14);
+}
+
+/* ---------- NIGHT (dark) — brand seed; dark text on bright primaries
+   (fixes the prototype's white-on-bright-gradient AA failure) ---------- */
+.theme-night {
+  --background: #0F1024;
+  --foreground: #ECEBFF;
+  --card: #191A38;
+  --card-foreground: #ECEBFF;
+  --popover: #191A38;
+  --popover-foreground: #ECEBFF;
+  --primary: #6C8CFF;
+  --primary-foreground: #0F1024;
+  --secondary: #A78BFA;
+  --secondary-foreground: #0F1024;
+  --muted: #23244A;
+  --muted-foreground: #A3A1CF;
+  --accent: #FFB59D;
+  --accent-foreground: #3A1D1D;
+  --destructive: #F87171;
+  --destructive-foreground: #0F1024;
+  --border: #3A3B66;
+  --input: #4A4B7C;
+  --ring: #6C8CFF;
+  --success: #4ADE80;
+  --success-foreground: #0F1024;
+  --success-soft: #16321F;
+  --success-soft-foreground: #86EFAC;
+  --gold: #FBBF24;
+  --gold-soft: #3A2E10;
+  --chart-1: #6C8CFF;
+  --chart-2: #A78BFA;
+  --chart-3: #4ADE80;
+  --chart-4: #FBBF24;
+  --chart-5: #FFB59D;
+  --sidebar: #191A38;
+  --sidebar-foreground: #ECEBFF;
+  --sidebar-primary: #6C8CFF;
+  --sidebar-primary-foreground: #0F1024;
+  --sidebar-accent: #23244A;
+  --sidebar-accent-foreground: #ECEBFF;
+  --sidebar-border: #3A3B66;
+  --sidebar-ring: #6C8CFF;
+  --hero-glow: rgba(108, 140, 255, 0.16);
+}
+
+/*
+ * ---------- Density profiles (master prompt 6.2) ----------
+ * young  = Nursery–Class 5: large type, 56px targets, spacious
+ * school = Classes 6–12 and droppers: standard, 44px targets
+ * adult  = above Class 12: compact, minimal
+ */
+:root {
+  --target: 44px;            /* minimum touch target */
+  --space-scale: 1;
+  --base-font: 16px;
+  --radius-card: 1.25rem;
+  --press-duration: 180ms;
+}
+
+.density-young {
+  --target: 56px;
+  --space-scale: 1.25;
+  --base-font: 18px;
+  --radius-card: 1.75rem;
+}
+
+.density-school {
+  --target: 44px;
+  --space-scale: 1;
+  --base-font: 16px;
+  --radius-card: 1.25rem;
+}
+
+.density-adult {
+  --target: 44px;
+  --space-scale: 0.875;
+  --base-font: 15px;
+  --radius-card: 1rem;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    font-size: var(--base-font);
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+    line-height: 1.5;
+  }
+  h1, h2, h3, h4 {
+    font-family: var(--font-heading), var(--font-body), ui-sans-serif, system-ui, sans-serif;
+  }
+  button, [role="button"], a, input, select, [tabindex] {
+    min-height: var(--target);
+    min-width: var(--target);
+  }
+  /* Visible focus indicator, never removed (WCAG 2.2) */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+/* Calm mode: kill animation, honour prefers-reduced-motion (3.2, 6.5) */
+.calm *, .calm *::before, .calm *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Soft press micro-interaction — ui-reasoning row 9 "Soft press (200ms)" */
+.press {
+  transition: transform var(--press-duration) ease, box-shadow var(--press-duration) ease;
+}
+.press:active {
+  transform: scale(0.97);
+}
+
+/* Mascot idle bob — CSS transforms only, stops under reduced motion */
+@keyframes lumio-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+.mascot-bob {
+  animation: lumio-bob 3.2s ease-in-out infinite;
+}
+
+@keyframes lumio-pop {
+  0% { transform: scale(0.6); opacity: 0; }
+  70% { transform: scale(1.06); }
+  100% { transform: scale(1); opacity: 1; }
+}
+.anim-pop {
+  animation: lumio-pop 0.35s ease-out both;
+}
+
+/* Custom scrollbar for long lists */
+.scroll-slim::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll-slim::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 8px;
+}
+.scroll-slim::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------- chunk 4B: Hindi / Devanagari typography pairing ---------- */
+/* When the learner picks Hindi, Noto Sans Devanagari joins both font stacks.
+   Devanagari needs taller ascenders (shirorekha, matras) — the raised line
+   height and explicit fallbacks keep script crisp with zero clipping. */
+html.lang-hi body {
+  font-family: var(--font-devanagari), var(--font-body), ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.75;
+}
+html.lang-hi h1,
+html.lang-hi h2,
+html.lang-hi h3,
+html.lang-hi h4 {
+  font-family: var(--font-devanagari), var(--font-heading), var(--font-body), sans-serif;
+  line-height: 1.6;
+}
+/* Hinglish is Roman script: keep brand fonts, no raised line height needed. */
+html.lang-hinglish body {
+  font-family: var(--font-body), var(--font-devanagari), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Print: only the printable area (worksheet / guardian summary) hits paper. */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .print-area,
+  .print-area * {
+    visibility: visible;
+  }
+  .print-area {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    padding: 0;
+    border: none;
+    background: white;
+    color: black;
+  }
+  .print-hide {
+    display: none !important;
+  }
+}

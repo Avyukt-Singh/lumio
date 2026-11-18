@@ -1,0 +1,11 @@
+const {chromium}=require(process.argv[2]+'/playwright');
+(async()=>{const b=await chromium.launch();const p=await b.newPage();const errs=[];p.on('pageerror',e=>errs.push(e.message));
+await p.goto('file://'+process.cwd()+'/lumio.html');const ok=(n,c,x='')=>console.log(c?'PASS':'FAIL',n,x);
+await p.evaluate(()=>{S.cat="school";S.board="CBSE";S.cls=CLS.indexOf("Class 11");S.band=bandOf(S.cls);S.name="T";save();const i=B().ch.findIndex(c=>/Oscillations/.test(c[0]));V="study";quiz={ci:i,i:-1,p:[]};render()});
+const r=await p.evaluate(()=>({c:document.querySelector('.mmc').textContent,n:document.querySelectorAll('.mmn').length}));
+ok('mind map shows chapter and branches',r.c==='Oscillations'&&r.n>=4&&r.n<=8,JSON.stringify(r));
+await p.click('.mmn summary');
+ok('branch expands to full sentence',await p.evaluate(()=>{const d=document.querySelector('.mmn');return d.open&&d.querySelector('p').offsetHeight>0}));
+await p.setViewportSize({width:390,height:800});await p.evaluate(()=>render());
+ok('no sideways scroll at 390 px',await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ok('no page errors',!errs.length,errs.join());await b.close()})();

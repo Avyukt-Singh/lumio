@@ -1,0 +1,1172 @@
+     1→'use client';
+     2→
+     3→import { useMemo, useState } from 'react';
+     4→import {
+     5→  ArrowLeft, ArrowRight, Check, Clock, Compass, GraduationCap, Plus, ShieldCheck,
+     6→  Target, Trash2, X,
+     7→} from 'lucide-react';
+     8→import { Button } from '@/components/ui/button';
+     9→import { Input } from '@/components/ui/input';
+    10→import { Label } from '@/components/ui/label';
+    11→import { Progress } from '@/components/ui/progress';
+    12→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+    13→import { Switch } from '@/components/ui/switch';
+    14→import { Mascot } from '../Mascot';
+    15→import { cn } from '@/lib/utils';
+    16→import { BOARDS, BANDS, EXAMS, type Band, type LearnerCat } from '@/lib/lumio/content';
+    17→import {
+    18→  classGrade, currentAcademicYear, INTEREST_AREAS, subjectsForClass,
+    19→} from '@/lib/lumio/chapterContent';
+    20→import { minToLabel, planDay } from '@/lib/lumio/domain';
+    21→import type { Commitment, Profile, SchedulePlan } from '@/lib/lumio/types';
+    22→
+    23→/**
+    24→ * Full onboarding wizard (chunk 2, master prompt 3.3 + 7.1): every step per
+    25→ * learner type is validated, progress saves per step (resumable), optional
+    26→ * steps can be skipped for now, the youngest band is completed with a guardian
+    27→ * confirmation, and the last step shows a live schedule preview built from the
+    28→ * answers. Reopening from Settings pre-fills every answer and keeps progress.
+    29→ */
+    30→
+    31→export interface FirstRunResult {
+    32→  profile: Profile;
+    33→  plan: SchedulePlan;
+    34→}
+    35→
+    36→export interface WizardDraft {
+    37→  step: number;
+    38→  cat: LearnerCat;
+    39→  // shared
+    40→  name: string;
+    41→  lang: 'en' | 'hi' | 'hinglish';
+    42→  goalText: string;
+    43→  // school
+    44→  className: string;
+    45→  board: string;
+    46→  stateName: string;
+    47→  intl: string;
+    48→  academicYear: string;
+    49→  subjects: string[];
+    50→  customSubjects: string;
+    51→  textbooks: string;
+    52→  wake: string;
+    53→  schoolStart: string;
+    54→  schoolEnd: string;
+    55→  dinner: string;
+    56→  bedtime: string;
+    57→  commitments: Commitment[];
+    58→  studyOutside: string; // hours as text for input
+    59→  nextExam: string;
+    60→  nextExamDate: string;
+    61→  compExam: string;
+    62→  compExamDate: string;
+    63→  compSub: string;
+    64→  guardianOk: boolean;
+    65→  // dropper
+    66→  exam: string;
+    67→  examDate: string;
+    68→  attempts: string;
+    69→  syllabus: string;
+    70→  strong: string;
+    71→  weak: string;
+    72→  prevPrep: string;
+    73→  mocksTaken: string;
+    74→  mockScore: string;
+    75→  mockTotal: string;
+    76→  availableHours: string;
+    77→  bestTime: string;
+    78→  // above
+    79→  learnerType: string;
+    80→  interest: string;
+    81→  interestCustom: string;
+    82→  level: string;
+    83→  targetDate: string;
+    84→  hoursPerWeek: string;
+    85→  preferredTime: string;
+    86→  topics: string;
+    87→}
+    88→
+    89→export const EMPTY_DRAFT: WizardDraft = {
+    90→  step: 0,
+    91→  cat: 'school',
+    92→  name: '',
+    93→  lang: 'en',
+    94→  goalText: '',
+    95→  className: '',
+    96→  board: 'CBSE',
+    97→  stateName: '',
+    98→  intl: '',
+    99→  academicYear: '',
+   100→  subjects: [],
+   101→  customSubjects: '',
+   102→  textbooks: '',
+   103→  wake: '06:30',
+   104→  schoolStart: '08:00',
+   105→  schoolEnd: '15:00',
+   106→  dinner: '20:00',
+   107→  bedtime: '22:30',
+   108→  commitments: [],
+   109→  studyOutside: '',
+   110→  nextExam: '',
+   111→  nextExamDate: '',
+   112→  compExam: '',
+   113→  compExamDate: '',
+   114→  compSub: '',
+   115→  guardianOk: false,
+   116→  exam: '',
+   117→  examDate: '',
+   118→  attempts: '',
+   119→  syllabus: '',
+   120→  strong: '',
+   121→  weak: '',
+   122→  prevPrep: '',
+   123→  mocksTaken: '',
+   124→  mockScore: '',
+   125→  mockTotal: '',
+   126→  availableHours: '',
+   127→  bestTime: 'morning',
+   128→  learnerType: '',
+   129→  interest: '',
+   130→  interestCustom: '',
+   131→  level: '',
+   132→  targetDate: '',
+   133→  hoursPerWeek: '',
+   134→  preferredTime: 'morning',
+   135→  topics: '',
+   136→};
+   137→
+   138→const CLASSES = [
+   139→  'Nursery', 'LKG', 'UKG', ...Array.from({ length: 12 }, (_, i) => `Class ${i + 1}`),
+   140→];
+   141→
+   142→const CATS: Array<{ id: LearnerCat; title: string; desc: string; icon: typeof GraduationCap }> = [
+   143→  { id: 'school', title: 'School student', desc: 'Nursery to Class 12', icon: GraduationCap },
+   144→  { id: 'dropper', title: 'Exam dropper', desc: 'Preparing for JEE, NEET, CUET and more', icon: Target },
+   145→  { id: 'above', title: 'Beyond Class 12', desc: 'Learning for skills and goals', icon: Compass },
+   146→];
+   147→
+   148→const ATTEMPT_OPTIONS = ['First attempt', 'Second attempt', 'Third or later'];
+   149→const LEVELS = ['Beginner', 'Intermediate', 'Advanced'];
+   150→const TIMES = ['morning', 'afternoon', 'evening', 'night'];
+   151→
+   152→export function bandOf(cls: string, cat: LearnerCat): Band {
+   153→  if (cat === 'dropper') return 'dropper';
+   154→  if (cat === 'above') return 'above';
+   155→  const n = CLASSES.indexOf(cls);
+   156→  if (n < 0) return 'middle';
+   157→  if (n <= 2) return 'young';
+   158→  const grade = n - 2;
+   159→  if (grade <= 5) return 'young';
+   160→  if (grade <= 8) return 'middle';
+   161→  if (grade <= 10) return 'sec';
+   162→  return 'senior';
+   163→}
+   164→
+   165→function toMin(hhmm: string, fallback: number): number {
+   166→  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm);
+   167→  if (!m) return fallback;
+   168→  const h = Number(m[1]);
+   169→  const min = Number(m[2]);
+   170→  if (h < 0 || h > 23 || min < 0 || min > 59) return fallback;
+   171→  return h * 60 + min;
+   172→}
+   173→
+   174→function hoursToMin(hhmm: string, fallback: number): number {
+   175→  return toMin(hhmm, fallback);
+   176→}
+   177→
+   178→const todayStr = () => new Date().toISOString().slice(0, 10);
+   179→
+   180→// ---------- step definitions ----------
+   181→
+   182→interface StepDef {
+   183→  id: string;
+   184→  title: string;
+   185→  optional?: boolean;
+   186→}
+   187→
+   188→function stepsFor(cat: LearnerCat, className: string): StepDef[] {
+   189→  const grade = classGrade(className);
+   190→  const school: StepDef[] = [
+   191→    { id: 'intro', title: 'Who is learning?' },
+   192→    { id: 'board', title: 'Your board' },
+   193→    { id: 'class', title: 'Your class' },
+   194→    { id: 'year', title: 'Academic year & language' },
+   195→    { id: 'subjects', title: 'Your subjects' },
+   196→    { id: 'books', title: 'Prescribed textbooks', optional: true },
+   197→    { id: 'day', title: 'Your day' },
+   198→    { id: 'commitments', title: 'Other commitments', optional: true },
+   199→    { id: 'outside', title: 'Study time outside school', optional: true },
+   200→    { id: 'exams', title: 'Exams ahead', optional: true },
+   201→    { id: 'goal', title: 'Your goal' },
+   202→    { id: 'guardian', title: 'Guardian confirmation' },
+   203→    { id: 'preview', title: 'Your plan is ready' },
+   204→  ];
+   205→  // competitive-exam goal only from Class 9; guardian optional for 9-12
+   206→  if (grade < 9) school.splice(9, 1);
+   207→  const dropper: StepDef[] = [
+   208→    { id: 'intro', title: 'Who is learning?' },
+   209→    { id: 'dropper-exam', title: 'Target exam' },
+   210→    { id: 'dropper-attempts', title: 'Previous attempts' },
+   211→    { id: 'dropper-syllabus', title: 'Subjects & syllabus' },
+   212→    { id: 'dropper-areas', title: 'Strong & weak areas' },
+   213→    { id: 'dropper-prep', title: 'Previous preparation & mocks' },
+   214→    { id: 'dropper-hours', title: 'Study hours' },
+   215→    { id: 'day', title: 'Your day' },
+   216→    { id: 'commitments', title: 'Other commitments', optional: true },
+   217→    { id: 'goal', title: 'Your goals' },
+   218→    { id: 'preview', title: 'Your plan is ready' },
+   219→  ];
+   220→  const above: StepDef[] = [
+   221→    { id: 'intro', title: 'Who is learning?' },
+   222→    { id: 'above-type', title: 'What brings you here?' },
+   223→    { id: 'above-goal', title: 'Goal & target date' },
+   224→    { id: 'above-time', title: 'Time you can give' },
+   225→    { id: 'commitments', title: 'Other commitments', optional: true },
+   226→    { id: 'above-topics', title: 'Topics to focus on', optional: true },
+   227→    { id: 'preview', title: 'Your plan is ready' },
+   228→  ];
+   229→  if (cat === 'school') return school;
+   230→  if (cat === 'dropper') return dropper;
+   231→  return above;
+   232→}
+   233→
+   234→function draftFromProfile(p: Profile, plan: SchedulePlan | null): WizardDraft {
+   235→  const fromMin = (min: number | undefined, def: string) =>
+   236→    typeof min === 'number' && min >= 0
+   237→      ? `${String(Math.floor(min / 60) % 24).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`
+   238→      : def;
+   239→  return {
+   240→    ...EMPTY_DRAFT,
+   241→    step: 0,
+   242→    cat: p.cat,
+   243→    name: p.name,
+   244→    lang: p.lang,
+   245→    goalText: p.goalText,
+   246→    className: p.className,
+   247→    board: p.board || 'CBSE',
+   248→    stateName: p.state ?? '',
+   249→    intl: p.intl ?? '',
+   250→    academicYear: p.academicYear ?? '',
+   251→    subjects: p.subjects ?? [],
+   252→    textbooks: p.textbooks ?? '',
+   253→    wake: fromMin(p.wakeMin, EMPTY_DRAFT.wake),
+   254→    schoolStart: fromMin(plan?.startMin, EMPTY_DRAFT.schoolStart),
+   255→    schoolEnd: fromMin(plan?.endMin, EMPTY_DRAFT.schoolEnd),
+   256→    dinner: fromMin(plan?.dinnerMin, EMPTY_DRAFT.dinner),
+   257→    bedtime: fromMin(plan?.bedMin, EMPTY_DRAFT.bedtime),
+   258→    commitments: p.commitments ?? [],
+   259→    studyOutside: p.studyOutsideMin ? String(p.studyOutsideMin / 60) : '',
+   260→    nextExam: p.nextExam ?? '',
+   261→    nextExamDate: p.nextExamDate ?? '',
+   262→    compExam: p.compExam ?? '',
+   263→    compExamDate: p.compExamDate ?? '',
+   264→    compSub: p.compSub ?? '',
+   265→    guardianOk: p.guardianConfirmed ?? false,
+   266→    exam: p.exam ?? '',
+   267→    examDate: p.examDate ?? '',
+   268→    attempts: p.attempts ?? '',
+   269→    syllabus: p.syllabusCovered ?? '',
+   270→    strong: p.strongAreas ?? '',
+   271→    weak: p.weakAreas ?? '',
+   272→    prevPrep: p.prevPrep ?? '',
+   273→    mocksTaken: typeof p.mocksTaken === 'number' ? String(p.mocksTaken) : '',
+   274→    mockScore: typeof p.mockScore === 'number' ? String(p.mockScore) : '',
+   275→    mockTotal: typeof p.mockTotal === 'number' ? String(p.mockTotal) : '',
+   276→    availableHours: '',
+   277→    bestTime: 'morning',
+   278→    learnerType: p.learnerType ?? '',
+   279→    interest: p.interest ?? '',
+   280→    level: p.level ?? '',
+   281→    targetDate: p.targetDate ?? '',
+   282→    hoursPerWeek: typeof p.hoursPerWeek === 'number' ? String(p.hoursPerWeek) : '',
+   283→    preferredTime: 'morning',
+   284→    topics: '',
+   285→  };
+   286→}
+   287→
+   288→// ---------- validation ----------
+   289→
+   290→function validateStep(d: WizardDraft, stepId: string): string {
+   291→  switch (stepId) {
+   292→    case 'class':
+   293→      if (d.cat === 'school' && !d.className) return 'Choose your class.';
+   294→      return '';
+   295→    case 'board':
+   296→      if (d.cat !== 'school') return '';
+   297→      if (!d.board) return 'Choose your board.';
+   298→      if (d.board === 'Other State Board' && !d.stateName.trim()) {
+   299→        return 'Tell us your state or union territory so the subject list matches.';
+   300→      }
+   301→      if (d.board === 'Other / International' && !d.intl.trim()) {
+   302→        return 'Describe your curriculum briefly (e.g. IB MYP, Cambridge).';
+   303→      }
+   304→      return '';
+   305→    case 'subjects':
+   306→      if (d.cat === 'above') return '';
+   307→      if (d.subjects.length === 0 && !d.customSubjects.trim()) {
+   308→        return 'Pick at least one subject (or add your own).';
+   309→      }
+   310→      return '';
+   311→    case 'day': {
+   312→      const wake = toMin(d.wake, -1);
+   313→      const start = toMin(d.schoolStart, -1);
+   314→      const end = toMin(d.schoolEnd, -1);
+   315→      const dinner = toMin(d.dinner, -1);
+   316→      const bed = toMin(d.bedtime, -1);
+   317→      if (wake < 0 || start < 0 || end < 0 || dinner < 0 || bed < 0) {
+   318→        return 'Enter all times as HH:MM.';
+   319→      }
+   320→      if (wake > start) return 'Wake time must be before school starts.';
+   321→      if (end <= start) return 'School end must be after school start.';
+   322→      if (dinner <= end) return 'Dinner must be after school ends.';
+   323→      if (bed <= dinner) return 'Bedtime must be after dinner.';
+   324→      return '';
+   325→    }
+   326→    case 'commitments': {
+   327→      for (const c of d.commitments) {
+   328→        if (c.endMin <= c.startMin) return `“${c.label || 'Commitment'}” must end after it starts.`;
+   329→        if (c.endMin - c.startMin > 12 * 60) return 'A commitment cannot be longer than 12 hours.';
+   330→      }
+   331→      return '';
+   332→    }
+   333→    case 'outside': {
+   334→      if (!d.studyOutside.trim()) return '';
+   335→      const n = Number(d.studyOutside);
+   336→      if (!Number.isFinite(n) || n < 0 || n > 12) return 'Study hours outside school must be between 0 and 12.';
+   337→      return '';
+   338→    }
+   339→    case 'exams': {
+   340→      if (d.nextExamDate) {
+   341→        if (Number.isNaN(Date.parse(d.nextExamDate))) return 'Enter a valid exam date.';
+   342→        if (Date.parse(d.nextExamDate) < Date.parse(todayStr())) return 'The exam date must be in the future.';
+   343→      }
+   344→      if (d.compExamDate) {
+   345→        if (Number.isNaN(Date.parse(d.compExamDate))) return 'Enter a valid competitive-exam date.';
+   346→        if (Date.parse(d.compExamDate) < Date.parse(todayStr())) return 'The competitive-exam date must be in the future.';
+   347→      }
+   348→      return '';
+   349→    }
+   350→    case 'dropper-exam': {
+   351→      if (!d.exam) return 'Choose the exam you are preparing for.';
+   352→      if (d.examDate) {
+   353→        if (Number.isNaN(Date.parse(d.examDate))) return 'Enter a valid exam date.';
+   354→        if (Date.parse(d.examDate) < Date.parse(todayStr())) return 'The exam date must be in the future.';
+   355→      }
+   356→      return '';
+   357→    }
+   358→    case 'dropper-attempts':
+   359→      if (!d.attempts) return 'Choose how many attempts you have had.';
+   360→      return '';
+   361→    case 'dropper-prep': {
+   362→      const taken = d.mocksTaken.trim() === '' ? 0 : Number(d.mocksTaken);
+   363→      if (!Number.isFinite(taken) || taken < 0 || taken > 50) return 'Mocks taken must be between 0 and 50.';
+   364→      if (taken > 0) {
+   365→        const score = Number(d.mockScore);
+   366→        const total = Number(d.mockTotal);
+   367→        if (!Number.isFinite(score) || score < 0) return 'Enter your latest mock score.';
+   368→        if (!Number.isFinite(total) || total <= 0) return 'Enter the total the mock is out of.';
+   369→        if (score > total) return 'The mock score cannot be above the total.';
+   370→      }
+   371→      return '';
+   372→    }
+   373→    case 'dropper-hours': {
+   374→      const n = Number(d.availableHours);
+   375→      if (!Number.isFinite(n) || n < 1 || n > 16) return 'Available study hours per day must be between 1 and 16.';
+   376→      return '';
+   377→    }
+   378→    case 'above-goal': {
+   379→      const focus = d.interest === 'Custom' ? d.interestCustom.trim() : d.interest;
+   380→      if (!focus) return 'Choose an area of interest (or write your own goal).';
+   381→      if (!d.goalText.trim()) return 'Write your goal in one line.';
+   382→      if (d.targetDate) {
+   383→        if (Number.isNaN(Date.parse(d.targetDate))) return 'Enter a valid target date.';
+   384→        if (Date.parse(d.targetDate) < Date.parse(todayStr())) return 'The target date must be in the future.';
+   385→      }
+   386→      return '';
+   387→    }
+   388→    case 'above-time': {
+   389→      const n = Number(d.hoursPerWeek);
+   390→      if (!Number.isFinite(n) || n < 1 || n > 100) return 'Hours per week must be between 1 and 100.';
+   391→      return '';
+   392→    }
+   393→    case 'guardian':
+   394→      return '';
+   395→    default:
+   396→      return '';
+   397→  }
+   398→}
+   399→
+   400→// ---------- final answers ----------
+   401→
+   402→export function answersToResult(d: WizardDraft, band: Band): FirstRunResult {
+   403→  const grade = classGrade(d.className);
+   404→  const profile: Profile = {
+   405→    name: d.name.trim(),
+   406→    cat: d.cat,
+   407→    band,
+   408→    board: d.cat === 'school' ? d.board : '',
+   409→    state: d.cat === 'school' && d.board === 'Other State Board' ? d.stateName.trim() : undefined,
+   410→    intl: d.cat === 'school' && d.board === 'Other / International' ? d.intl.trim() : undefined,
+   411→    className: d.cat === 'school' ? d.className : '',
+   412→    goalText: d.goalText.trim(),
+   413→    exam: d.cat === 'dropper' ? d.exam : undefined,
+   414→    examDate: d.cat === 'dropper' && d.examDate ? d.examDate : undefined,
+   415→    tz: 'Asia/Kolkata',
+   416→    lang: d.lang,
+   417→    academicYear: d.cat === 'school' ? d.academicYear || undefined : undefined,
+   418→    subjects: d.cat === 'above' ? undefined : [...d.subjects, ...d.customSubjects.trim() ? d.customSubjects.split(',').map((s) => s.trim()).filter(Boolean) : []],
+   419→    textbooks: d.cat === 'school' && d.textbooks.trim() ? d.textbooks.trim() : undefined,
+   420→    nextExam: d.cat === 'school' && d.nextExam.trim() ? d.nextExam.trim() : undefined,
+   421→    nextExamDate: d.cat === 'school' && d.nextExamDate ? d.nextExamDate : undefined,
+   422→    compExam: d.cat === 'school' && d.compExam.trim() ? d.compExam.trim() : undefined,
+   423→    compExamDate: d.cat === 'school' && d.compExamDate ? d.compExamDate : undefined,
+   424→    compSub: d.cat === 'school' && d.compSub.trim() ? d.compSub.trim() : undefined,
+   425→    guardianConfirmed: d.cat === 'school' ? d.guardianOk : undefined,
+   426→    attempts: d.cat === 'dropper' ? d.attempts : undefined,
+   427→    syllabusCovered: d.cat === 'dropper' && d.syllabus.trim() ? d.syllabus.trim() : undefined,
+   428→    strongAreas: d.cat === 'dropper' && d.strong.trim() ? d.strong.trim() : undefined,
+   429→    weakAreas: d.cat === 'dropper' && d.weak.trim() ? d.weak.trim() : undefined,
+   430→    prevPrep: d.cat === 'dropper' && d.prevPrep.trim() ? d.prevPrep.trim() : undefined,
+   431→    mocksTaken: d.cat === 'dropper' && d.mocksTaken.trim() !== '' ? Number(d.mocksTaken) : undefined,
+   432→    mockScore: d.cat === 'dropper' && d.mockScore.trim() !== '' ? Number(d.mockScore) : undefined,
+   433→    mockTotal: d.cat === 'dropper' && d.mockTotal.trim() !== '' ? Number(d.mockTotal) : undefined,
+   434→    learnerType: d.cat === 'above' ? d.learnerType : undefined,
+   435→    interest: d.cat === 'above' ? (d.interest === 'Custom' ? d.interestCustom.trim() : d.interest) : undefined,
+   436→    level: d.cat === 'above' ? d.level : undefined,
+   437→    targetDate: d.cat === 'above' && d.targetDate ? d.targetDate : undefined,
+   438→    hoursPerWeek: d.cat === 'above' && d.hoursPerWeek.trim() !== '' ? Number(d.hoursPerWeek) : undefined,
+   439→    wakeMin: hoursToMin(d.wake, 390),
+   440→    studyOutsideMin: d.cat === 'school' && d.studyOutside.trim() !== '' ? Math.round(Number(d.studyOutside) * 60) : undefined,
+   441→    commitments: d.commitments,
+   442→  };
+   443→  const plan: SchedulePlan = {
+   444→    startMin: hoursToMin(d.schoolStart, 480),
+   445→    endMin: hoursToMin(d.schoolEnd, 900),
+   446→    dinnerMin: hoursToMin(d.dinner, 1200),
+   447→    bedMin: hoursToMin(d.bedtime, 1350),
+   448→    sessions: Math.max(1, Math.min(6, BANDS[band].dailyGoal || 2)),
+   449→    sessionLen: band === 'young' ? 15 : 30,
+   450→    wakeMin: profile.wakeMin,
+   451→    busy: d.commitments,
+   452→  };
+   453→  return { profile, plan };
+   454→}
+   455→
+   456→// ---------- the wizard ----------
+   457→
+   458→export function Onboarding({
+   459→  draft,
+   460→  onDraftChange,
+   461→  onFinish,
+   462→  onCancel,
+   463→}: {
+   464→  draft: WizardDraft | null;
+   465→  onDraftChange: (d: WizardDraft | null) => void;
+   466→  onFinish: (r: FirstRunResult) => void;
+   467→  /** present when reopening from Settings: keeps the current profile untouched */
+   468→  onCancel?: () => void;
+   469→}) {
+   470→  const [d, setD] = useState<WizardDraft>(draft ?? EMPTY_DRAFT);
+   471→  const band = bandOf(d.className, d.cat);
+   472→  const steps = stepsFor(d.cat, d.cat === 'school' ? d.className : 'Class 9');
+   473→  const stepDef = steps[Math.min(d.step, steps.length - 1)];
+   474→  const total = steps.length;
+   475→
+   476→  const set = (patch: Partial<WizardDraft>) => {
+   477→    const next = { ...d, ...patch };
+   478→    setD(next);
+   479→    onDraftChange(next); // resumable per step
+   480→  };
+   481→
+   482→  const stepError = useMemo(() => validateStep(d, stepDef.id), [d, stepDef.id]);
+   483→
+   484→  // live schedule preview (7.1 upgrade)
+   485→  const preview = useMemo(() => {
+   486→    if (stepDef.id !== 'preview') return null;
+   487→    const { plan } = answersToResult(d, band);
+   488→    const { slots, dropped } = planDay(plan);
+   489→    return { plan, slots, dropped };
+   490→  }, [stepDef.id, d, band]);
+   491→
+   492→  // default academic year + subjects once class is known
+   493→  const suggestedSubjects = subjectsForClass(d.className, d.cat);
+   494→  const yearDefault = useMemo(() => currentAcademicYear(new Date()), []);
+   495→
+   496→  const finish = () => {
+   497→    const r = answersToResult(d, band);
+   498→    onDraftChange(null);
+   499→    onFinish(r);
+   500→  };
+   501→
+   502→  const isYoung = band === 'young';
+   503→  const grade = classGrade(d.className);
+   504→
+   505→  return (
+   506→    <div className="mx-auto w-full max-w-xl">
+   507→      <div className="mb-4 flex items-center gap-4 rounded-2xl border border-border bg-card p-4">
+   508→        <Mascot pose={isYoung ? 'excited' : 'standing'} size="lg" bob />
+   509→        <div className="min-w-0">
+   510→          <h1 className="font-heading text-2xl font-bold">
+   511→            {d.step === 0 ? 'Hi, I am Lumio!' : stepDef.title}
+   512→          </h1>
+   513→          <p className="text-sm text-muted-foreground">
+   514→            {d.step === 0
+   515→              ? 'Your learning buddy. A few quick questions and I will build your plan.'
+   516→              : `Step ${d.step + 1} of ${total}`}
+   517→          </p>
+   518→          <Progress value={((d.step + 1) / total) * 100} className="mt-2 h-2" aria-label={`Setup step ${d.step + 1} of ${total}`} />
+   519→        </div>
+   520→      </div>
+   521→
+   522→      <div className="rounded-2xl border border-border bg-card p-5">
+   523→        {stepError && (
+   524→          <p role="alert" className="mb-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">
+   525→            {stepError}
+   526→          </p>
+   527→        )}
+   528→
+   529→        {/* ---------- step bodies ---------- */}
+   530→        {stepDef.id === 'intro' && (
+   531→          <fieldset>
+   532→            <legend className="mb-3 font-heading text-lg font-semibold">Who is learning?</legend>
+   533→            <div className="grid gap-3 sm:grid-cols-3">
+   534→              {CATS.map(({ id, title, desc, icon: Icon }) => (
+   535→                <button
+   536→                  key={id}
+   537→                  onClick={() => set({ cat: id })}
+   538→                  aria-pressed={d.cat === id}
+   539→                  className={cn(
+   540→                    'press flex min-h-[88px] flex-col items-start gap-1 rounded-2xl border-2 p-3 text-left',
+   541→                    d.cat === id ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40'
+   542→                  )}
+   543→                >
+   544→                  <Icon className="size-5 text-primary" aria-hidden="true" />
+   545→                  <span className="font-semibold">{title}</span>
+   546→                  <span className="text-xs text-muted-foreground">{desc}</span>
+   547→                </button>
+   548→              ))}
+   549→            </div>
+   550→            <div className="mt-4">
+   551→              <Label htmlFor="ob-name">Your name (optional)</Label>
+   552→              <Input id="ob-name" value={d.name} onChange={(e) => set({ name: e.target.value })} placeholder="Learner name" maxLength={30} className="mt-1" />
+   553→            </div>
+   554→          </fieldset>
+   555→        )}
+   556→
+   557→        {stepDef.id === 'board' && (
+   558→          <fieldset>
+   559→            <legend className="mb-3 font-heading text-lg font-semibold">Your board</legend>
+   560→            <div>
+   561→              <Label htmlFor="ob-board">Board</Label>
+   562→              <Select value={d.board} onValueChange={(v) => set({ board: v })}>
+   563→                <SelectTrigger id="ob-board" className="mt-1"><SelectValue /></SelectTrigger>
+   564→                <SelectContent>
+   565→                  {BOARDS.map((b) => (
+   566→                    <SelectItem key={b} value={b}>{b}</SelectItem>
+   567→                  ))}
+   568→                </SelectContent>
+   569→              </Select>
+   570→            </div>
+   571→            {d.board === 'Other State Board' && (
+   572→              <div className="mt-3">
+   573→                <Label htmlFor="ob-state">Your state or union territory</Label>
+   574→                <Input id="ob-state" value={d.stateName} onChange={(e) => set({ stateName: e.target.value })} placeholder="e.g. Kerala" className="mt-1" />
+   575→              </div>
+   576→            )}
+   577→            {d.board === 'Other / International' && (
+   578→              <div className="mt-3">
+   579→                <Label htmlFor="ob-intl">Your curriculum</Label>
+   580→                <Input id="ob-intl" value={d.intl} onChange={(e) => set({ intl: e.target.value })} placeholder="e.g. IB MYP, Cambridge IGCSE" className="mt-1" />
+   581→              </div>
+   582→            )}
+   583→          </fieldset>
+   584→        )}
+   585→
+   586→        {stepDef.id === 'class' && (
+   587→          <fieldset>
+   588→            <legend className="mb-3 font-heading text-lg font-semibold">Your class</legend>
+   589→            <Select value={d.className} onValueChange={(v) => {
+   590→              const grade = classGrade(v);
+   591→              // guardian defaults by age (3.3): required young, recommended middle, off 9-12
+   592→              set({ className: v, subjects: [], guardianOk: grade >= 6 && grade <= 8 });
+   593→            }}>
+   594→              <SelectTrigger className="mt-1"><SelectValue placeholder="Pick your class" /></SelectTrigger>
+   595→              <SelectContent className="max-h-72">
+   596→                {CLASSES.map((c) => (
+   597→                  <SelectItem key={c} value={c}>{c}</SelectItem>
+   598→                ))}
+   599→              </SelectContent>
+   600→            </Select>
+   601→          </fieldset>
+   602→        )}
+   603→
+   604→        {stepDef.id === 'year' && (
+   605→          <fieldset>
+   606→            <legend className="mb-3 font-heading text-lg font-semibold">Academic year & language</legend>
+   607→            <div className="grid gap-3 sm:grid-cols-2">
+   608→              <div>
+   609→                <Label htmlFor="ob-year">Academic year</Label>
+   610→                <Input id="ob-year" value={d.academicYear} onChange={(e) => set({ academicYear: e.target.value })} placeholder={yearDefault} className="mt-1" />
+   611→                <p className="mt-1 text-xs text-muted-foreground">Defaults to the current Indian academic year.</p>
+   612→              </div>
+   613→              <div>
+   614→                <Label htmlFor="ob-lang">Preferred language</Label>
+   615→                <Select value={d.lang} onValueChange={(v) => set({ lang: v as WizardDraft['lang'] })}>
+   616→                  <SelectTrigger id="ob-lang" className="mt-1"><SelectValue /></SelectTrigger>
+   617→                  <SelectContent>
+   618→                    <SelectItem value="en">English</SelectItem>
+   619→                    <SelectItem value="hi">हिन्दी (Hindi)</SelectItem>
+   620→                    <SelectItem value="hinglish">Hinglish</SelectItem>
+   621→                  </SelectContent>
+   622→                </Select>
+   623→              </div>
+   624→            </div>
+   625→          </fieldset>
+   626→        )}
+   627→
+   628→        {stepDef.id === 'subjects' && (
+   629→          <fieldset>
+   630→            <legend className="mb-1 font-heading text-lg font-semibold">Your subjects</legend>
+   631→            <p className="mb-3 text-sm text-muted-foreground">
+   632→              Matched to your board{d.board === 'Other State Board' && d.stateName ? ` and ${d.stateName}` : ''}, class and catalogue. Add anything missing.
+   633→            </p>
+   634→            <div className="flex flex-wrap gap-2">
+   635→              {suggestedSubjects.map((s) => {
+   636→                const on = d.subjects.includes(s);
+   637→                return (
+   638→                  <button
+   639→                    key={s}
+   640→                    onClick={() => set({ subjects: on ? d.subjects.filter((x) => x !== s) : [...d.subjects, s] })}
+   641→                    aria-pressed={on}
+   642→                    className={cn(
+   643→                      'press inline-flex min-h-[44px] items-center gap-1.5 rounded-full border-2 px-3 text-sm font-medium',
+   644→                      on ? 'border-primary bg-primary/10 text-primary' : 'border-border text-foreground hover:border-primary/40'
+   645→                    )}
+   646→                  >
+   647→                    {on ? <Check className="size-4" aria-hidden="true" /> : <Plus className="size-4" aria-hidden="true" />}
+   648→                    {s}
+   649→                  </button>
+   650→                );
+   651→              })}
+   652→            </div>
+   653→            <div className="mt-4">
+   654→              <Label htmlFor="ob-custom">Custom subjects (comma separated, optional)</Label>
+   655→              <Input id="ob-custom" value={d.customSubjects} onChange={(e) => set({ customSubjects: e.target.value })} placeholder="e.g. EVS, French" className="mt-1" />
+   656→            </div>
+   657→          </fieldset>
+   658→        )}
+   659→
+   660→        {stepDef.id === 'books' && (
+   661→          <fieldset>
+   662→            <legend className="mb-1 font-heading text-lg font-semibold">Prescribed textbooks</legend>
+   663→            <p className="mb-3 text-sm text-muted-foreground">Optional — Lumio never copies textbook content; this only personalises your plan.</p>
+   664→            <Label htmlFor="ob-books">Textbook names</Label>
+   665→            <Input id="ob-books" value={d.textbooks} onChange={(e) => set({ textbooks: e.target.value })} placeholder="e.g. NCERT Science Class 8" className="mt-1" />
+   666→          </fieldset>
+   667→        )}
+   668→
+   669→        {stepDef.id === 'day' && (
+   670→          <fieldset>
+   671→            <legend className="mb-1 font-heading text-lg font-semibold">Your day</legend>
+   672→            <p className="mb-3 text-sm text-muted-foreground">
+   673→              Lumio plans study sessions around school, dinner and bedtime.
+   674→              {d.cat !== 'school' && ' School times stand for your study hours.'}
+   675→            </p>
+   676→            <div className="grid gap-3 sm:grid-cols-2">
+   677→              <TimeField id="ob-wake" label="Wake up" value={d.wake} onChange={(v) => set({ wake: v })} />
+   678→              <TimeField id="ob-schst" label={d.cat === 'school' ? 'School starts' : 'Study starts'} value={d.schoolStart} onChange={(v) => set({ schoolStart: v })} />
+   679→              <TimeField id="ob-schen" label={d.cat === 'school' ? 'School ends' : 'Study ends'} value={d.schoolEnd} onChange={(v) => set({ schoolEnd: v })} />
+   680→              <TimeField id="ob-dinner" label="Dinner" value={d.dinner} onChange={(v) => set({ dinner: v })} />
+   681→              <TimeField id="ob-bed" label="Bedtime" value={d.bedtime} onChange={(v) => set({ bedtime: v })} />
+   682→            </div>
+   683→            <p className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
+   684→              <Clock className="size-3.5" aria-hidden="true" />
+   685→              Band: <strong>{BANDS[band].name}</strong> — Lumio adapts to it.
+   686→            </p>
+   687→          </fieldset>
+   688→        )}
+   689→
+   690→        {stepDef.id === 'commitments' && (
+   691→          <fieldset>
+   692→            <legend className="mb-1 font-heading text-lg font-semibold">Other commitments</legend>
+   693→            <p className="mb-3 text-sm text-muted-foreground">
+   694→              Tuitions, sports, music practice — Lumio keeps study sessions away from these times every day.
+   695→            </p>
+   696→            <ul className="flex flex-col gap-2">
+   697→              {d.commitments.map((c, i) => (
+   698→                <li key={i} className="flex items-center gap-2 rounded-xl border border-border p-2">
+   699→                  <span className="min-w-0 flex-1 truncate text-sm font-medium">{c.label}</span>
+   700→                  <span className="font-mono text-xs text-muted-foreground">{minToLabel(c.startMin)}–{minToLabel(c.endMin)}</span>
+   701→                  <Button variant="ghost" size="icon" aria-label={`Remove ${c.label}`} onClick={() => set({ commitments: d.commitments.filter((_, j) => j !== i) })}>
+   702→                    <Trash2 className="size-4" aria-hidden="true" />
+   703→                  </Button>
+   704→                </li>
+   705→              ))}
+   706→            </ul>
+   707→            <CommitmentAdder onAdd={(c) => set({ commitments: [...d.commitments, c] })} />
+   708→          </fieldset>
+   709→        )}
+   710→
+   711→        {stepDef.id === 'outside' && (
+   712→          <fieldset>
+   713→            <legend className="mb-1 font-heading text-lg font-semibold">Study time outside school</legend>
+   714→            {grade >= 10 ? (
+   715→              <p className="mb-3 rounded-lg bg-gold-soft px-3 py-2 text-sm font-medium" style={{ color: 'var(--gold)' }}>
+   716→                Classes 10–12: Lumio sets a 1.5× daily target from this answer.
+   717→              </p>
+   718→            ) : null}
+   719→            <Label htmlFor="ob-outside">Hours you can study outside school (per day)</Label>
+   720→            <Input id="ob-outside" type="number" min={0} max={12} step={0.5} value={d.studyOutside} onChange={(e) => set({ studyOutside: e.target.value })} placeholder="e.g. 2" className="mt-1" />
+   721→          </fieldset>
+   722→        )}
+   723→
+   724→        {stepDef.id === 'exams' && (
+   725→          <fieldset>
+   726→            <legend className="mb-1 font-heading text-lg font-semibold">Exams ahead</legend>
+   727→            <div className="grid gap-3 sm:grid-cols-2">
+   728→              <div>
+   729→                <Label htmlFor="ob-nexam">Next school exam (optional)</Label>
+   730→                <Input id="ob-nexam" value={d.nextExam} onChange={(e) => set({ nextExam: e.target.value })} placeholder="e.g. Half-yearly" className="mt-1" />
+   731→              </div>
+   732→              <div>
+   733→                <Label htmlFor="ob-nexamd">Its date</Label>
+   734→                <Input id="ob-nexamd" type="date" min={todayStr()} value={d.nextExamDate} onChange={(e) => set({ nextExamDate: e.target.value })} className="mt-1" />
+   735→              </div>
+   736→              {grade >= 9 && (
+   737→                <>
+   738→                  <div>
+   739→                    <Label htmlFor="ob-cexam">Competitive-exam goal (optional)</Label>
+   740→                    <Select value={d.compExam} onValueChange={(v) => set({ compExam: v })}>
+   741→                      <SelectTrigger id="ob-cexam" className="mt-1"><SelectValue placeholder="Pick an exam" /></SelectTrigger>
+   742→                      <SelectContent>
+   743→                        {EXAMS.map((x) => (
+   744→                          <SelectItem key={x} value={x}>{x}</SelectItem>
+   745→                        ))}
+   746→                      </SelectContent>
+   747→                    </Select>
+   748→                  </div>
+   749→                  <div>
+   750→                    <Label htmlFor="ob-cexamd">Its date</Label>
+   751→                    <Input id="ob-cexamd" type="date" min={todayStr()} value={d.compExamDate} onChange={(e) => set({ compExamDate: e.target.value })} className="mt-1" />
+   752→                  </div>
+   753→                </>
+   754→              )}
+   755→            </div>
+   756→          </fieldset>
+   757→        )}
+   758→
+   759→        {stepDef.id === 'goal' && (
+   760→          <fieldset>
+   761→            <legend className="mb-3 font-heading text-lg font-semibold">Your goal</legend>
+   762→            {d.cat === 'school' && (
+   763→              <>
+   764→                <div className="mb-3">
+   765→                  <Label htmlFor="ob-goal">What do you want to get better at? (optional)</Label>
+   766→                  <Input id="ob-goal" value={d.goalText} onChange={(e) => set({ goalText: e.target.value })} placeholder="e.g. Do well in Physics" maxLength={80} className="mt-1" />
+   767→                </div>
+   768→                <div>
+   769→                  <Label htmlFor="ob-compsub">Complementary subject (optional)</Label>
+   770→                  <Input id="ob-compsub" value={d.compSub} onChange={(e) => set({ compSub: e.target.value })} placeholder="e.g. Geography alongside Physics" maxLength={40} className="mt-1" />
+   771→                  <p className="mt-1 text-xs text-muted-foreground">A completed chapter unlocks a 15-minute session in this subject.</p>
+   772→                </div>
+   773→              </>
+   774→            )}
+   775→            {d.cat === 'dropper' && (
+   776→              <div>
+   777→                <Label htmlFor="ob-goal2">This year, you want to…</Label>
+   778→                <Input id="ob-goal2" value={d.goalText} onChange={(e) => set({ goalText: e.target.value })} placeholder="e.g. Finish the syllabus by March" maxLength={80} className="mt-1" />
+   779→              </div>
+   780→            )}
+   781→          </fieldset>
+   782→        )}
+   783→
+   784→        {stepDef.id === 'dropper-exam' && (
+   785→          <fieldset>
+   786→            <legend className="mb-3 font-heading text-lg font-semibold">Target exam</legend>
+   787→            <div className="grid gap-3 sm:grid-cols-2">
+   788→              <div>
+   789→                <Label htmlFor="ob-exam">Exam</Label>
+   790→                <Select value={d.exam ?? ''} onValueChange={(v) => set({ exam: v })}>
+   791→                  <SelectTrigger id="ob-exam" className="mt-1"><SelectValue placeholder="Pick your exam" /></SelectTrigger>
+   792→                  <SelectContent>
+   793→                    {EXAMS.map((x) => (
+   794→                      <SelectItem key={x} value={x}>{x}</SelectItem>
+   795→                    ))}
+   796→                  </SelectContent>
+   797→                </Select>
+   798→              </div>
+   799→              <div>
+   800→                <Label htmlFor="ob-examd">Exam date</Label>
+   801→                <Input id="ob-examd" type="date" min={todayStr()} value={d.examDate ?? ''} onChange={(e) => set({ examDate: e.target.value })} className="mt-1" />
+   802→              </div>
+   803→            </div>
+   804→          </fieldset>
+   805→        )}
+   806→
+   807→        {stepDef.id === 'dropper-attempts' && (
+   808→          <fieldset>
+   809→            <legend className="mb-3 font-heading text-lg font-semibold">Previous attempts</legend>
+   810→            <Select value={d.attempts} onValueChange={(v) => set({ attempts: v })}>
+   811→              <SelectTrigger className="mt-1"><SelectValue placeholder="How many times have you taken it?" /></SelectTrigger>
+   812→              <SelectContent>
+   813→                {ATTEMPT_OPTIONS.map((a) => (
+   814→                  <SelectItem key={a} value={a}>{a}</SelectItem>
+   815→                ))}
+   816→              </SelectContent>
+   817→            </Select>
+   818→            <p className="mt-3 text-xs text-muted-foreground">Every attempt counts. Lumio plans from where you are, not from zero.</p>
+   819→          </fieldset>
+   820→        )}
+   821→
+   822→        {stepDef.id === 'dropper-syllabus' && (
+   823→          <fieldset>
+   824→            <legend className="mb-1 font-heading text-lg font-semibold">Subjects & syllabus</legend>
+   825→            <p className="mb-3 text-sm text-muted-foreground">Pick the subjects you are preparing and what you have covered so far.</p>
+   826→            <div className="flex flex-wrap gap-2">
+   827→              {subjectsForClass('', 'dropper').map((s) => {
+   828→                const on = d.subjects.includes(s);
+   829→                return (
+   830→                  <button
+   831→                    key={s}
+   832→                    onClick={() => set({ subjects: on ? d.subjects.filter((x) => x !== s) : [...d.subjects, s] })}
+   833→                    aria-pressed={on}
+   834→                    className={cn(
+   835→                      'press inline-flex min-h-[44px] items-center gap-1.5 rounded-full border-2 px-3 text-sm font-medium',
+   836→                      on ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-primary/40'
+   837→                    )}
+   838→                  >
+   839→                    {on ? <Check className="size-4" aria-hidden="true" /> : <Plus className="size-4" aria-hidden="true" />}
+   840→                    {s}
+   841→                  </button>
+   842→                );
+   843→              })}
+   844→            </div>
+   845→            <div className="mt-3">
+   846→              <Label htmlFor="ob-syll">Syllabus covered so far (optional)</Label>
+   847→              <Input id="ob-syll" value={d.syllabus} onChange={(e) => set({ syllabus: e.target.value })} placeholder="e.g. Kinematics and Thermodynamics done" maxLength={120} className="mt-1" />
+   848→            </div>
+   849→          </fieldset>
+   850→        )}
+   851→
+   852→        {stepDef.id === 'dropper-areas' && (
+   853→          <fieldset>
+   854→            <legend className="mb-3 font-heading text-lg font-semibold">Strong & weak areas</legend>
+   855→            <div className="grid gap-3">
+   856→              <div>
+   857→                <Label htmlFor="ob-strong">Strong areas (optional)</Label>
+   858→                <Input id="ob-strong" value={d.strong} onChange={(e) => set({ strong: e.target.value })} placeholder="e.g. Mechanics, Organic Chemistry" className="mt-1" />
+   859→              </div>
+   860→              <div>
+   861→                <Label htmlFor="ob-weak">Weak areas (optional)</Label>
+   862→                <Input id="ob-weak" value={d.weak} onChange={(e) => set({ weak: e.target.value })} placeholder="e.g. Rotation, Electrostatics" className="mt-1" />
+   863→              </div>
+   864→            </div>
+   865→          </fieldset>
+   866→        )}
+   867→
+   868→        {stepDef.id === 'dropper-prep' && (
+   869→          <fieldset>
+   870→            <legend className="mb-1 font-heading text-lg font-semibold">Previous preparation & mocks</legend>
+   871→            <div className="grid gap-3 sm:grid-cols-2">
+   872→              <div className="sm:col-span-2">
+   873→                <Label htmlFor="ob-prev">Previous preparation (optional)</Label>
+   874→                <Input id="ob-prev" value={d.prevPrep} onChange={(e) => set({ prevPrep: e.target.value })} placeholder="e.g. One year coaching, self-study" className="mt-1" />
+   875→              </div>
+   876→              <div>
+   877→                <Label htmlFor="ob-mocks">Mocks taken</Label>
+   878→                <Input id="ob-mocks" type="number" min={0} max={50} value={d.mocksTaken} onChange={(e) => set({ mocksTaken: e.target.value })} placeholder="0" className="mt-1" />
+   879→              </div>
+   880→              <div />
+   881→              <div>
+   882→                <Label htmlFor="ob-mscore">Latest mock score</Label>
+   883→                <Input id="ob-mscore" type="number" min={0} value={d.mockScore} onChange={(e) => set({ mockScore: e.target.value })} className="mt-1" disabled={Number(d.mocksTaken || 0) === 0} />
+   884→              </div>
+   885→              <div>
+   886→                <Label htmlFor="ob-mtotal">Out of</Label>
+   887→                <Input id="ob-mtotal" type="number" min={1} value={d.mockTotal} onChange={(e) => set({ mockTotal: e.target.value })} className="mt-1" disabled={Number(d.mocksTaken || 0) === 0} />
+   888→              </div>
+   889→            </div>
+   890→            <p className="mt-2 text-xs text-muted-foreground">The score cannot be above the total — Lumio checks, kindly.</p>
+   891→          </fieldset>
+   892→        )}
+   893→
+   894→        {stepDef.id === 'dropper-hours' && (
+   895→          <fieldset>
+   896→            <legend className="mb-3 font-heading text-lg font-semibold">Study hours</legend>
+   897→            <div className="grid gap-3 sm:grid-cols-2">
+   898→              <div>
+   899→                <Label htmlFor="ob-avail">Hours available per day</Label>
+   900→                <Input id="ob-avail" type="number" min={1} max={16} value={d.availableHours} onChange={(e) => set({ availableHours: e.target.value })} placeholder="e.g. 8" className="mt-1" />
+   901→              </div>
+   902→              <div>
+   903→                <Label htmlFor="ob-best">Best time of day</Label>
+   904→                <Select value={d.bestTime} onValueChange={(v) => set({ bestTime: v })}>
+   905→                  <SelectTrigger id="ob-best" className="mt-1"><SelectValue /></SelectTrigger>
+   906→                  <SelectContent>
+   907→                    {TIMES.map((t) => (
+   908→                      <SelectItem key={t} value={t}>{t[0].toUpperCase() + t.slice(1)}</SelectItem>
+   909→                    ))}
+   910→                  </SelectContent>
+   911→                </Select>
+   912→              </div>
+   913→            </div>
+   914→          </fieldset>
+   915→        )}
+   916→
+   917→        {stepDef.id === 'above-type' && (
+   918→          <fieldset>
+   919→            <legend className="mb-3 font-heading text-lg font-semibold">What brings you here?</legend>
+   920→            <div className="mb-4">
+   921→              <Label htmlFor="ob-ltype">Type of learner</Label>
+   922→              <Select value={d.learnerType} onValueChange={(v) => set({ learnerType: v })}>
+   923→                <SelectTrigger id="ob-ltype" className="mt-1"><SelectValue placeholder="Pick one" /></SelectTrigger>
+   924→                <SelectContent>
+   925→                  <SelectItem value="College student">College student</SelectItem>
+   926→                  <SelectItem value="Working professional">Working professional</SelectItem>
+   927→                  <SelectItem value="Self-learner">Self-learner</SelectItem>
+   928→                  <SelectItem value="Career switcher">Career switcher</SelectItem>
+   929→                </SelectContent>
+   930→              </Select>
+   931→            </div>
+   932→            <Label htmlFor="ob-interest">Area of interest</Label>
+   933→            <div className="mt-1 flex flex-wrap gap-2">
+   934→              {[...INTEREST_AREAS.slice(0, 12), 'Custom'].map((a) => (
+   935→                <button
+   936→                  key={a}
+   937→                  onClick={() => set({ interest: a })}
+   938→                  aria-pressed={d.interest === a}
+   939→                  className={cn(
+   940→                    'press inline-flex min-h-[44px] items-center rounded-full border-2 px-3 text-sm font-medium',
+   941→                    d.interest === a ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-primary/40'
+   942→                  )}
+   943→                >
+   944→                  {a}
+   945→                </button>
+   946→              ))}
+   947→            </div>
+   948→            {d.interest === 'Custom' && (
+   949→              <div className="mt-3">
+   950→                <Label htmlFor="ob-icustom">Your area</Label>
+   951→                <Input id="ob-icustom" value={d.interestCustom} onChange={(e) => set({ interestCustom: e.target.value })} maxLength={60} className="mt-1" />
+   952→              </div>
+   953→            )}
+   954→          </fieldset>
+   955→        )}
+   956→
+   957→        {stepDef.id === 'above-goal' && (
+   958→          <fieldset>
+   959→            <legend className="mb-3 font-heading text-lg font-semibold">Goal & target date</legend>
+   960→            <div className="grid gap-3">
+   961→              <div>
+   962→                <Label htmlFor="ob-level">Your level</Label>
+   963→                <Select value={d.level} onValueChange={(v) => set({ level: v })}>
+   964→                  <SelectTrigger id="ob-level" className="mt-1"><SelectValue placeholder="Pick one" /></SelectTrigger>
+   965→                  <SelectContent>
+   966→                    {LEVELS.map((l) => (
+   967→                      <SelectItem key={l} value={l}>{l}</SelectItem>
+   968→                    ))}
+   969→                  </SelectContent>
+   970→                </Select>
+   971→              </div>
+   972→              <div>
+   973→                <Label htmlFor="ob-goal3">Your goal</Label>
+   974→                <Input id="ob-goal3" value={d.goalText} onChange={(e) => set({ goalText: e.target.value })} placeholder="e.g. Build and ship a small web app" maxLength={80} className="mt-1" />
+   975→              </div>
+   976→              <div>
+   977→                <Label htmlFor="ob-tdate">Target date (optional)</Label>
+   978→                <Input id="ob-tdate" type="date" min={todayStr()} value={d.targetDate} onChange={(e) => set({ targetDate: e.target.value })} className="mt-1" />
+   979→              </div>
+   980→            </div>
+   981→          </fieldset>
+   982→        )}
+   983→
+   984→        {stepDef.id === 'above-time' && (
+   985→          <fieldset>
+   986→            <legend className="mb-3 font-heading text-lg font-semibold">Time you can give</legend>
+   987→            <div className="grid gap-3 sm:grid-cols-2">
+   988→              <div>
+   989→                <Label htmlFor="ob-hpw">Hours per week</Label>
+   990→                <Input id="ob-hpw" type="number" min={1} max={100} value={d.hoursPerWeek} onChange={(e) => set({ hoursPerWeek: e.target.value })} placeholder="e.g. 6" className="mt-1" />
+   991→              </div>
+   992→              <div>
+   993→                <Label htmlFor="ob-pt">Preferred time</Label>
+   994→                <Select value={d.preferredTime} onValueChange={(v) => set({ preferredTime: v })}>
+   995→                  <SelectTrigger id="ob-pt" className="mt-1"><SelectValue /></SelectTrigger>
+   996→                  <SelectContent>
+   997→                    {TIMES.map((t) => (
+   998→                      <SelectItem key={t} value={t}>{t[0].toUpperCase() + t.slice(1)}</SelectItem>
+   999→                    ))}
+  1000→                  </SelectContent>
+  1001→                </Select>
+  1002→              </div>
+  1003→              <div>
+  1004→                <Label htmlFor="ob-bed2">Bedtime</Label>
+  1005→                <Input id="ob-bed2" type="time" value={d.bedtime} onChange={(e) => set({ bedtime: e.target.value })} className="mt-1" />
+  1006→              </div>
+  1007→            </div>
+  1008→          </fieldset>
+  1009→        )}
+  1010→
+  1011→        {stepDef.id === 'above-topics' && (
+  1012→          <fieldset>
+  1013→            <legend className="mb-1 font-heading text-lg font-semibold">Topics to focus on</legend>
+  1014→            <p className="mb-3 text-sm text-muted-foreground">Optional — specific topics you want Lumio to prioritise.</p>
+  1015→            <Label htmlFor="ob-topics">Topics</Label>
+  1016→            <Input id="ob-topics" value={d.topics} onChange={(e) => set({ topics: e.target.value })} placeholder="e.g. React basics, SQL joins" maxLength={120} className="mt-1" />
+  1017→          </fieldset>
+  1018→        )}
+  1019→
+  1020→        {stepDef.id === 'guardian' && (
+  1021→          <fieldset>
+  1022→            <legend className="mb-2 font-heading text-lg font-semibold">Guardian confirmation</legend>
+  1023→            {grade <= 5 && (
+  1024→              <p className="mb-3 rounded-lg bg-gold-soft px-3 py-2 text-sm font-medium" style={{ color: 'var(--gold)' }}>
+  1025→                For Classes Nursery–5 a guardian completes this step with you. Their confirmation is needed to finish.
+  1026→              </p>
+  1027→            )}
+  1028→            {grade > 5 && grade <= 8 && (
+  1029→              <p className="mb-3 text-sm text-muted-foreground">A guardian confirmation is recommended for Classes 6–8 and is on by default — you can turn it off.</p>
+  1030→            )}
+  1031→            {grade > 8 && (
+  1032→              <p className="mb-3 text-sm text-muted-foreground">Guardian sharing is optional from Class 9 and off by default. Lumio never asks for a parent&apos;s phone number.</p>
+  1033→            )}
+  1034→            <div className="flex items-start gap-3 rounded-xl border border-border p-4">
+  1035→              <ShieldCheck className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />
+  1036→              <div className="min-w-0 flex-1">
+  1037→                <Label htmlFor="ob-guard">A guardian has seen and approved this setup</Label>
+  1038→                <p className="mt-1 text-xs text-muted-foreground">
+  1039→                  With consent on, a printable weekly summary can be shared. Consent can be changed any time in Settings.
+  1040→                </p>
+  1041→              </div>
+  1042→              <Switch
+  1043→                id="ob-guard"
+  1044→                checked={d.guardianOk}
+  1045→                onCheckedChange={(v) => set({ guardianOk: v })}
+  1046→              />
+  1047→            </div>
+  1048→          </fieldset>
+  1049→        )}
+  1050→
+  1051→        {stepDef.id === 'preview' && preview && (
+  1052→          <fieldset>
+  1053→            <legend className="mb-1 font-heading text-lg font-semibold">Your plan is ready</legend>
+  1054→            <p className="mb-3 text-sm text-muted-foreground">
+  1055→              Sessions fit around school, dinner{d.commitments.length ? ', your commitments' : ''} and bedtime.
+  1056→            </p>
+  1057→            <ol className="flex flex-col gap-2">
+  1058→              {preview.slots.map((s, i) => (
+  1059→                <li key={i} className="flex items-center gap-3 rounded-xl border border-border p-3">
+  1060→                  <Clock className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+  1061→                  <span className="font-mono text-sm">{minToLabel(s.startMin)}–{minToLabel(s.endMin)}</span>
+  1062→                  <span className="text-sm text-muted-foreground">{s.label}</span>
+  1063→                </li>
+  1064→              ))}
+  1065→            </ol>
+  1066→            {preview.dropped > 0 ? (
+  1067→              <p role="status" className="mt-3 rounded-lg bg-gold-soft px-3 py-2 text-sm font-medium" style={{ color: 'var(--gold)' }}>
+  1068→                Your day is too full for {preview.dropped} session{preview.dropped === 1 ? '' : 's'}. Lumio says so instead of guessing — you can shorten sessions or free up time.
+  1069→              </p>
+  1070→            ) : (
+  1071→              <p className="mt-3 rounded-lg bg-success-soft px-3 py-2 text-sm font-medium text-success-soft-foreground">
+  1072→                All {preview.slots.length} planned session{preview.slots.length === 1 ? '' : 's'} fit today.
+  1073→              </p>
+  1074→            )}
+  1075→          </fieldset>
+  1076→        )}
+  1077→
+  1078→        {/* ---------- nav ---------- */}
+  1079→        <div className="mt-5 flex items-center justify-between gap-2">
+  1080→          <div className="flex items-center gap-1">
+  1081→            <Button
+  1082→              variant="ghost"
+  1083→              onClick={() => (d.step === 0 ? undefined : set({ step: d.step - 1 }))}
+  1084→              disabled={d.step === 0}
+  1085→            >
+  1086→              <ArrowLeft className="size-4" aria-hidden="true" /> Back
+  1087→            </Button>
+  1088→            {onCancel && (
+  1089→              <Button variant="ghost" onClick={onCancel}>
+  1090→                Back to app
+  1091→              </Button>
+  1092→            )}
+  1093→          </div>
+  1094→          <div className="flex items-center gap-2">
+  1095→            {stepDef.optional && d.step < total - 1 && (
+  1096→              <Button variant="ghost" onClick={() => set({ step: d.step + 1 })}>
+  1097→                Skip for now <X className="size-4" aria-hidden="true" />
+  1098→              </Button>
+  1099→            )}
+  1100→            {d.step < total - 1 ? (
+  1101→              <Button
+  1102→                onClick={() => {
+  1103→                  if (stepError) return;
+  1104→                  set({ step: d.step + 1 });
+  1105→                }}
+  1106→                disabled={!!stepError || (stepDef.id === 'guardian' && grade <= 5 && !d.guardianOk)}
+  1107→              >
+  1108→                Next <ArrowRight className="size-4" aria-hidden="true" />
+  1109→              </Button>
+  1110→            ) : (
+  1111→              <Button onClick={finish} disabled={!!stepError}>
+  1112→                <Check className="size-4" aria-hidden="true" /> Start learning
+  1113→              </Button>
+  1114→            )}
+  1115→          </div>
+  1116→        </div>
+  1117→      </div>
+  1118→
+  1119→      <p className="mt-4 text-center text-xs text-muted-foreground">
+  1120→        Sample content only — Lumio material is written for practice, not official curriculum.
+  1121→      </p>
+  1122→    </div>
+  1123→  );
+  1124→}
+  1125→
+  1126→function TimeField({
+  1127→  id, label, value, onChange,
+  1128→}: { id: string; label: string; value: string; onChange: (v: string) => void }) {
+  1129→  return (
+  1130→    <div>
+  1131→      <Label htmlFor={id}>{label}</Label>
+  1132→      <Input id={id} type="time" value={value} onChange={(e) => onChange(e.target.value)} className="mt-1" />
+  1133→    </div>
+  1134→  );
+  1135→}
+  1136→
+  1137→function CommitmentAdder({ onAdd }: { onAdd: (c: Commitment) => void }) {
+  1138→  const [label, setLabel] = useState('');
+  1139→  const [start, setStart] = useState('17:00');
+  1140→  const [end, setEnd] = useState('18:00');
+  1141→  const add = () => {
+  1142→    const s = toMin(start, -1);
+  1143→    const e = toMin(end, -1);
+  1144→    if (!label.trim() || s < 0 || e <= s) return;
+  1145→    onAdd({ label: label.trim(), startMin: s, endMin: e });
+  1146→    setLabel('');
+  1147→    setStart('17:00');
+  1148→    setEnd('18:00');
+  1149→  };
+  1150→  return (
+  1151→    <div className="mt-3 grid items-end gap-2 rounded-xl border border-dashed border-border p-3 sm:grid-cols-[2fr_1fr_1fr_auto]">
+  1152→      <div>
+  1153→        <Label htmlFor="ob-clabel">What</Label>
+  1154→        <Input id="ob-clabel" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Cricket practice" className="mt-1" />
+  1155→      </div>
+  1156→      <div>
+  1157→        <Label htmlFor="ob-cstart">From</Label>
+  1158→        <Input id="ob-cstart" type="time" value={start} onChange={(e) => setStart(e.target.value)} className="mt-1" />
+  1159→      </div>
+  1160→      <div>
+  1161→        <Label htmlFor="ob-cend">To</Label>
+  1162→        <Input id="ob-cend" type="time" value={end} onChange={(e) => setEnd(e.target.value)} className="mt-1" />
+  1163→      </div>
+  1164→      <Button variant="secondary" onClick={add} aria-label="Add commitment">
+  1165→        <Plus className="size-4" aria-hidden="true" /> Add
+  1166→      </Button>
+  1167→    </div>
+  1168→  );
+  1169→}
+  1170→
+  1171→export { draftFromProfile };
+  1172→

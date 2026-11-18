@@ -1,0 +1,18 @@
+const {chromium}=require(process.argv[2]+'/playwright');
+(async()=>{const b=await chromium.launch();const p=await b.newPage();const errs=[];p.on('pageerror',e=>errs.push(e.message));
+await p.goto('file://'+process.cwd()+'/lumio.html');const ok=(n,c,x='')=>console.log(c?'PASS':'FAIL',n,x);
+await p.evaluate(()=>{S.cat="school";S.board="CBSE";S.cls=CLS.indexOf("Class 10");S.band=bandOf(S.cls);S.name="T";S.vn={};save();V="focus";render()});
+ok('parses common YouTube link forms',await p.evaluate(()=>[["https://www.youtube.com/watch?v=dQw4w9WgXcQ","dQw4w9WgXcQ"],["https://youtu.be/dQw4w9WgXcQ?t=5","dQw4w9WgXcQ"],["https://m.youtube.com/watch?feature=share&v=dQw4w9WgXcQ","dQw4w9WgXcQ"],["https://www.youtube.com/shorts/dQw4w9WgXcQ","dQw4w9WgXcQ"],["https://www.youtube.com/embed/dQw4w9WgXcQ","dQw4w9WgXcQ"]].every(([u,i])=>ytId(u)===i)));
+ok('rejects non-YouTube and malformed links',await p.evaluate(()=>["https://evil.com/watch?v=dQw4w9WgXcQ","https://youtube.com.evil.com/watch?v=dQw4w9WgXcQ","javascript:alert(1)","https://www.youtube.com/watch?v=short","",'https://youtu.be/dQw4w9WgXcQ"onload="x'].every(u=>ytId(u)==="")));
+await p.fill('#fyu','https://example.com/x');await p.click('[data-fy=load]');
+ok('bad link shows an error and no player',await p.evaluate(()=>!!document.querySelector('#ytcard [role=alert]')&&!document.querySelector('#ytcard iframe')));
+await p.fill('#fyu','https://youtu.be/dQw4w9WgXcQ');await p.click('[data-fy=load]');
+ok('good link embeds privacy-enhanced player with rel=0',await p.evaluate(()=>{const f=document.querySelector('#ytcard iframe');return !!f&&f.src.startsWith('https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?')&&f.src.includes('rel=0')}));
+await p.fill('#fyn','Newton second law notes');
+ok('notes saved per video',await p.evaluate(()=>S.vn.dQw4w9WgXcQ==='Newton second law notes'));
+await p.click('[data-fy=close]');await p.fill('#fyu','https://youtu.be/dQw4w9WgXcQ');await p.click('[data-fy=load]');
+ok('notes come back when the same video is reopened',await p.evaluate(()=>document.querySelector('#fyn').value==='Newton second law notes'));
+ok('limitations text updated, not claiming YouTube blocking',await p.evaluate(()=>{const t=document.body.innerText;return t.includes('does not block YouTube')&&t.includes('including YouTube itself')}));
+await p.setViewportSize({width:390,height:800});await p.evaluate(()=>render());
+ok('no sideways scroll at 390 px',await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ok('no page errors',!errs.length,errs.join());await b.close()})();

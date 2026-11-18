@@ -1,0 +1,12 @@
+const {chromium}=require(require('child_process').execSync('npm root -g').toString().trim()+'/playwright');
+const check=()=>{const bad=[];document.querySelectorAll('#root button,#root a,#root input:not([type=hidden]),#root select,#root summary,#root textarea').forEach(e=>{const r0=e.getBoundingClientRect();if(!r0.width||!r0.height)return;if(getComputedStyle(e).visibility==='hidden')return;if(e.id==='upf')return;const dt=e.closest('details');if(dt&&!dt.open&&e.tagName!=='SUMMARY'&&!(e.parentElement===dt))return;
+ e.scrollIntoView({block:'center'});const r=(e.getClientRects()[0]||e.getBoundingClientRect());const t=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);if(t&&t!==e&&!e.contains(t)&&!t.contains(e)&&!(e.closest('label')&&e.closest('label').contains(t)))bad.push((e.innerText||e.id||e.tagName).trim().slice(0,18)+' under '+t.tagName+'.'+(t.className||'').toString().slice(0,10))});return bad.slice(0,4)};
+(async()=>{const b=await chromium.launch();
+const profs=[['CBSE11',async p=>{await p.getByText('School Student').click();await p.locator('#root select').nth(0).selectOption({label:'CBSE'});await p.locator('#root select').nth(1).selectOption({label:'Class 11'})}],['Class2',async p=>{await p.getByText('School Student').click();await p.locator('#root select').nth(1).selectOption({label:'Class 2'})}],['ICSE7',async p=>{await p.getByText('School Student').click();await p.locator('#root select').nth(0).selectOption({label:'ICSE / CISCE'});await p.locator('#root select').nth(1).selectOption({label:'Class 7'})}],['Above12',async p=>{await p.getByText('Above Class 12').click()}]];
+for(const [lab,fn] of profs){const p=await b.newPage({viewport:{width:390,height:800}});const errs=[];p.on('pageerror',e=>errs.push(e.message));
+await p.goto('file:///home/claude/lumio/lumio.html');await p.waitForTimeout(200);await fn(p);await require('./_ob.js').finish(p);await p.waitForTimeout(200);
+await p.evaluate("S.consent=S.cat==='school';S.compSub=COMP[0][0];save()");
+const views=['home','study','games','progress','ach','board','settings','ship','code','chem','ai','aif','proj','pend','web','bio','math','biz','time','geo','count','memory','word','parent','comp'];
+const out=[];for(const v of views){await p.evaluate("V='"+v+"';render()");await p.waitForTimeout(40);const bad=await p.evaluate("("+check.toString()+")()");if(bad.length)out.push(v+': '+bad.join('; '))}
+console.log(lab,out.length?out:'no obstructed controls',errs);await p.close()}
+await b.close()})().catch(e=>console.log('FAIL',e.message.split('\n')[0]));

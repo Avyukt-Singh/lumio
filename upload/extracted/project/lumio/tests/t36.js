@@ -1,0 +1,13 @@
+const {chromium}=require(require('child_process').execSync('npm root -g').toString().trim()+'/playwright');
+(async()=>{const b=await chromium.launch();const p=await b.newPage({viewport:{width:1200,height:800}});p.setDefaultTimeout(4000);const errs=[];p.on('pageerror',e=>errs.push(e.message));
+const T=async()=>(await p.locator('#root').innerText()).replace(/\n+/g,' | ');
+await p.goto('file:///home/claude/lumio/lumio.html');await p.waitForTimeout(250);
+await p.getByText('Above Class 12').click();await require('./_ob.js').finish(p);await p.waitForTimeout(250);
+await p.locator('.nb',{hasText:'Study'}).click();console.log('STUDY:',(await T()).slice(200,520));
+console.log('subject checkboxes in study?',await p.locator('.sb2').count());
+await p.locator('.nb',{hasText:'Settings'}).click();const st=await T();
+console.log('SETTINGS has:',['Subjects','catalogue','Custom','goal','Search subjects'].map(k=>k+':'+st.includes(k)).join(' '));
+console.log('sb2 count:',await p.locator('.sb2').count(),'| sample:',await p.locator('.sb2').evaluateAll(e=>e.slice(0,6).map(x=>x.value)));
+console.log('inputs:',JSON.stringify(await p.locator('#root input:not([type=checkbox]), #root textarea').evaluateAll(e=>e.map(x=>x.id+':'+x.type+':'+(x.placeholder||'')))));
+await p.locator('#q').fill('python');await p.keyboard.press('Enter');await p.waitForTimeout(250);console.log('SEARCH python:',(await T()).slice(200,500));
+console.log(errs);await b.close()})().catch(e=>console.log('FAIL',e.message.split('\n')[0]));

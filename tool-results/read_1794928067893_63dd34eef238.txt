@@ -1,0 +1,747 @@
+     1→'use client';
+     2→
+     3→import { useCallback, useEffect, useRef, useState } from 'react';
+     4→import { RefreshCw, Sparkles } from 'lucide-react';
+     5→import { Button } from '@/components/ui/button';
+     6→import { Shell, type ScreenId } from './Shell';
+     7→import { StudyBuddy, type BuddyChapter } from './ai/StudyBuddy';
+     8→import {
+     9→  Onboarding, draftFromProfile, EMPTY_DRAFT,
+    10→  type FirstRunResult, type WizardDraft,
+    11→} from './screens/Onboarding';
+    12→import { Home } from './screens/Home';
+    13→import { SettingsScreen } from './screens/Settings';
+    14→import { Study, BoardGuide } from './screens/Study';
+    15→import { Reader } from './screens/Reader';
+    16→import { Quiz, type QuizOutcome } from './screens/Quiz';
+    17→import { ProgressScreen } from './screens/Progress';
+    18→import { AchievementsScreen } from './screens/Achievements';
+    19→import { GamesScreen } from './screens/Games';
+    20→import { Planner } from './screens/Planner';
+    21→import { Focus } from './screens/Focus';
+    22→import { MockTests } from './screens/Mocks';
+    23→import { StudyTools } from './screens/StudyTools';
+    24→import { GuardianScreen } from './screens/Guardian';
+    25→import { Mascot } from './Mascot';
+    26→import { XpStreakDashboard } from './screens/XpStreak';
+    27→import { AccountBadge, AccountSettingsCard, DevicePrompt } from './account/AccountCard';
+    28→import { authApi, type AccountUser } from '@/lib/lumio/accountClient';
+    29→import type { NotesAiResult, PracticeAiItem } from '@/lib/lumio/aiClient';
+    30→import { dbMetaGet, dbMetaSet } from '@/lib/lumio/db';
+    31→import { BANDS } from '@/lib/lumio/content';
+    32→import { dayKey, hourOf, streakFrom, themeAt, totalXp } from '@/lib/lumio/domain';
+    33→import { toast } from '@/hooks/use-toast';
+    34→import { tFor } from '@/lib/lumio/i18n';
+    35→import {
+    36→  DEFAULT_SETTINGS, DEFAULT_TZ, defaultState, loadState, normalizeState, parseImport,
+    37→  projectState, resetAllStorage, saveState,
+    38→} from '@/lib/lumio/storage';
+    39→import { appendEvent, applyEvent, loadEventsAndSeed, replayEvents } from '@/lib/lumio/events';
+    40→import { requestPersistence } from '@/lib/lumio/db';
+    41→import { GAME_XP, LAB_GAME_IDS, PRACTICE_XP } from '@/lib/lumio/domain';
+    42→import type { LumioEvent, LumioState, MistakeTag, PracticeKind, Profile, Settings, ThemeName } from '@/lib/lumio/types';
+    43→
+    44→/**
+    45→ * LumioApp (chunk 2): single-route client app. Owns the typed state (a pure
+    46→ * projection of the IndexedDB event log), the theme engine, screen switching
+    47→ * and all mutations via `dispatch` — every change is an appended event (ADR
+    48→ * 0002). Persistence: event log -> projection -> snapshot mirror.
+    49→ */
+    50→export function LumioApp() {
+    51→  const [state, setState] = useState<LumioState | null>(null);
+    52→  const [hydrated, setHydrated] = useState(false);
+    53→  const [screen, setScreen] = useState<ScreenId>('home');
+    54→  const [reader, setReader] = useState<number | null>(null);
+    55→  const [quiz, setQuiz] = useState<number | null>(null);
+    56→  const [editProfile, setEditProfile] = useState(false);
+    57→  const [saveError, setSaveError] = useState<string | undefined>(undefined);
+    58→  const [now, setNow] = useState(() => new Date());
+    59→  const [swWaiting, setSwWaiting] = useState<ServiceWorker | null>(null);
+    60→  // ---- chunk 5A: account state (never gates the learning loop) ----
+    61→  const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
+    62→  const [accountAvail, setAccountAvail] = useState<'unknown' | 'ok' | 'unavailable'>('unknown');
+    63→  // ---- chunk 5B: AI capability (unknown -> treated as off until the probe resolves) ----
+    64→  const [aiMode, setAiMode] = useState<'unknown' | 'off' | 'fake' | 'openai-compatible'>('unknown');
+    65→  const [studyBuddyOpen, setStudyBuddyOpen] = useState(false);
+    66→  const [devOutbox, setDevOutbox] = useState(false);
+    67→  const [devicePrompt, setDevicePrompt] = useState<{ userId: string; userName: string | null } | null>(null);
+    68→  const stateRef = useRef<LumioState | null>(null);
+    69→  useEffect(() => { stateRef.current = state; }, [state]);
+    70→
+    71→  // ---- derived values: ALL declared above every useEffect hook ----
+    72→  // Plain constants (no useMemo). Keeping every binding above the effects
+    73→  // guarantees no hoisted effect can ever read them in their temporal dead zone
+    74→  // (the chunk-1 TDZ bug — this ordering is a hard rule for this file).
+    75→  const tz = state?.profile?.tz ?? DEFAULT_TZ;
+    76→  const calm = state?.settings.calm ?? false;
+    77→  const themeOverride = state?.settings.theme ?? 'auto';
+    78→  const themeSchedule = state?.settings.sch ?? DEFAULT_SETTINGS.sch;
+    79→  const theme: ThemeName =
+    80→    themeOverride !== 'auto' ? themeOverride : themeAt(hourOf(now, tz), themeSchedule);
+    81→  const band = state?.profile?.band;
+    82→  const density =
+    83→    band === 'young' ? ('young' as const) : band === 'above' ? ('adult' as const) : ('school' as const);
+    84→  // chunk 4B: interface language drives translation + Devanagari typography
+    85→  const lang = state?.profile?.lang ?? 'en';
+    86→  const tr = tFor(lang);
+    87→  // chunk 5B: AI features are hidden entirely until the capability probe says otherwise
+    88→  const aiAvailable = aiMode === 'fake' || aiMode === 'openai-compatible';
+    89→
+    90→  // hydrate once (client only; never during SSR): replay the event log, seeded
+    91→  // from the chunk-1 snapshot when present. Falls back to the snapshot mirror
+    92→  // if IndexedDB replay fails entirely.
+    93→  useEffect(() => {
+    94→    let alive = true;
+    95→    requestPersistence();
+    96→    queueMicrotask(async () => {
+    97→      if (!alive) return;
+    98→      try {
+    99→        const events = await loadEventsAndSeed();
+   100→        const projected = replayEvents(events, new Date(), events.length && (events[events.length - 1] as { tz?: string }).tz ? ((events[events.length - 1] as unknown as { tz: string }).tz) : DEFAULT_TZ);
+   101→        if (alive) {
+   102→          setState(projected);
+   103→          saveState(projected);
+   104→        }
+   105→      } catch {
+   106→        const snapshot = loadState();
+   107→        if (alive) setState(snapshot ? projectState(normalizeState(snapshot), new Date(), snapshot.profile?.tz ?? DEFAULT_TZ) : defaultState());
+   108→      }
+   109→      if (alive) setHydrated(true);
+   110→    });
+   111→    return () => { alive = false; };
+   112→  }, []);
+   113→
+   114→  // minute ticker: keeps the theme engine and scheduler honest without tick-count timers
+   115→  useEffect(() => {
+   116→    const t = setInterval(() => setNow(new Date()), 30_000);
+   117→    return () => clearInterval(t);
+   118→  }, []);
+   119→
+   120→  // Theme + density classes must live on <html> so that font-size (rem scale),
+   121→  // body background and touch-target vars resolve globally (chunk-1 bug fix —
+   122→  // keep the sync on documentElement, not just the Shell wrapper).
+   123→  useEffect(() => {
+   124→    const root = document.documentElement;
+   125→    root.classList.remove(
+   126→      'theme-morning', 'theme-evening', 'theme-night', 'night',
+   127→      'density-young', 'density-school', 'density-adult', 'calm'
+   128→    );
+   129→    root.classList.add(`theme-${theme}`, `density-${density}`);
+   130→    if (theme === 'night') root.classList.add('night');
+   131→    if (calm) root.classList.add('calm');
+   132→  }, [theme, density, calm]);
+   133→
+   134→  // Language class on <html> pairs Noto Sans Devanagari with the brand fonts
+   135→  // and keeps assistive tech informed (chunk 4B i18n).
+   136→  useEffect(() => {
+   137→    const root = document.documentElement;
+   138→    root.classList.remove('lang-hi', 'lang-hinglish', 'lang-en');
+   139→    root.classList.add(`lang-${lang}`);
+   140→    root.setAttribute('lang', lang === 'hi' ? 'hi' : 'en');
+   141→  }, [lang]);
+   142→
+   143→  // ---- chunk 5A: account probe — AFTER hydration, never blocking ----
+   144→  // The app boots fully from local data; /api/auth/me and /api/capabilities
+   145→  // are tried afterwards. Unreachable server => honest 'unavailable' state,
+   146→  // every existing feature keeps working (degradation matrix master 8.2).
+   147→  useEffect(() => {
+   148→    if (!hydrated) return;
+   149→    let alive = true;
+   150→    void (async () => {
+   151→      const caps = await authApi.capabilities();
+   152→      const me = await authApi.me();
+   153→      if (!alive) return;
+   154→      const unavailable = !caps.ok || !me.ok || me.data.unavailable === true;
+   155→      setAccountAvail(unavailable ? 'unavailable' : 'ok');
+   156→      if (caps.ok) {
+   157→        setDevOutbox(caps.data.devOutbox === true);
+   158→        const mode = caps.data.ai?.mode;
+   159→        setAiMode(mode === 'fake' || mode === 'openai-compatible' ? mode : 'off');
+   160→      } else {
+   161→        setAiMode('off');
+   162→      }
+   163→      if (me.ok && me.data.signedIn && me.data.user) {
+   164→        setAccountUser(me.data.user);
+   165→        await dbMetaSet('account-user-id', me.data.user.id);
+   166→      } else {
+   167→        setAccountUser(null);
+   168→      }
+   169→    })();
+   170→    return () => { alive = false; };
+   171→  }, [hydrated]);
+   172→
+   173→  const recordAccountId = (id: string) => {
+   174→    try {
+   175→      localStorage.setItem('lumio-account-last', id);
+   176→    } catch {
+   177→      /* private mode */
+   178→    }
+   179→  };
+   180→
+   181→  const handleSignedIn = (user: AccountUser) => {
+   182→    const prevId = (() => {
+   183→      try {
+   184→        return localStorage.getItem('lumio-account-last');
+   185→      } catch {
+   186→        return null;
+   187→      }
+   188→    })();
+   189→    const hasLocalProgress = !!stateRef.current?.profile;
+   190→    if (prevId && prevId !== user.id && hasLocalProgress) {
+   191→      // Never merge silently (spec 8): ask the learner what to do.
+   192→      setDevicePrompt({ userId: user.id, userName: user.name });
+   193→      setAccountUser(user);
+   194→      void dbMetaSet('account-user-id', user.id);
+   195→      return;
+   196→    }
+   197→    recordAccountId(user.id);
+   198→    setAccountUser(user);
+   199→    void dbMetaSet('account-user-id', user.id);
+   200→    toast({ title: tr('account.welcome'), description: tr('account.signedInToast') });
+   201→  };
+   202→
+   203→  const handleSignedOut = () => {
+   204→    setAccountUser(null);
+   205→    void dbMetaSet('account-user-id', '');
+   206→    toast({ title: tr('account.signedOutToast') });
+   207→  };
+   208→
+   209→  const handleDeleted = () => {
+   210→    setAccountUser(null);
+   211→    try {
+   212→      localStorage.removeItem('lumio-account-last');
+   213→    } catch {
+   214→      /* private mode */
+   215→    }
+   216→    void dbMetaSet('account-user-id', '');
+   217→    toast({ title: tr('account.deletedToast') });
+   218→  };
+   219→
+   220→  const accountSlot = (
+   221→    <AccountBadge
+   222→      lang={lang}
+   223→      user={accountUser}
+   224→      avail={accountAvail}
+   225→      devOutbox={devOutbox}
+   226→      onSignedIn={handleSignedIn}
+   227→      onSignedOut={handleSignedOut}
+   228→      onDeleted={handleDeleted}
+   229→    />
+   230→  );
+   231→
+   232→  // chunk 5B: when a chapter is open in Reader the panel grounds on THAT chapter;
+   233→  // otherwise StudyBuddy shows a chapter select (chapter = null).
+   234→  const studyBuddyChapter: BuddyChapter | null =
+   235→    reader !== null && state?.profile?.band
+   236→      ? (() => {
+   237→          const chapters = BANDS[state.profile!.band].chapters;
+   238→          const ch = chapters[Math.min(Math.max(0, reader), chapters.length - 1)];
+   239→          return ch
+   240→            ? { id: `${state.profile!.band}#${reader}`, title: ch.title, subject: ch.subject, chapterIndex: reader }
+   241→            : null;
+   242→        })()
+   243→      : null;
+   244→  const signedIn = !!accountUser;
+   245→  const aiEnabled = accountUser?.aiEnabled === true;
+   246→  const aiDemo = aiMode === 'fake';
+   247→
+   248→  // service-worker update prompt (chunk 2): never auto-swaps mid-session
+   249→  useEffect(() => {
+   250→    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+   251→    let reg: ServiceWorkerRegistration | null = null;
+   252→    const findWaiting = () => {
+   253→      if (reg?.waiting && navigator.serviceWorker.controller) setSwWaiting(reg.waiting);
+   254→    };
+   255→    navigator.serviceWorker.register('/sw.js')
+   256→      .then((r) => {
+   257→        reg = r;
+   258→        findWaiting();
+   259→        r.addEventListener('updatefound', () => {
+   260→          const nw = r.installing;
+   261→          nw?.addEventListener('statechange', () => {
+   262→            if (nw.state === 'installed') findWaiting();
+   263→          });
+   264→        });
+   265→      })
+   266→      .catch(() => { /* offline/PWA unsupported — the app still works */ });
+   267→  }, []);
+   268→
+   269→  /**
+   270→   * The one mutation path: append an event, reapply the projection, mirror the
+   271→   * snapshot. Derived values (XP, best scores, streak, achievements) come out
+   272→   * of the projection only — never set by callers (5.4).
+   273→   */
+   274→  const dispatch = useCallback((e: LumioEvent) => {
+   275→    const prev = stateRef.current;
+   276→    if (!prev) return;
+   277→    const zone = prev.profile?.tz ?? DEFAULT_TZ;
+   278→    const next = projectState(applyEvent(prev, e), new Date(), zone);
+   279→    stateRef.current = next;
+   280→    setState(next);
+   281→    const res = saveState(next);
+   282→    setSaveError(res.ok ? undefined : res.error);
+   283→    // Streak Saver notifications (chunk 4C): earned / bought / used.
+   284→    const prevOwned = prev.freeze.owned;
+   285→    const nextOwned = next.freeze.owned;
+   286→    if (nextOwned > prevOwned) {
+   287→      toast({
+   288→        title: e.type === 'saver-bought' ? 'Streak Saver purchased' : 'Streak Saver earned!',
+   289→        description:
+   290→          e.type === 'saver-bought'
+   291→            ? 'It will protect your streak if a day is missed.'
+   292→            : 'Great performance — your streak just got an extra life.',
+   293→      });
+   294→    } else if (nextOwned < prevOwned) {
+   295→      toast({
+   296→        title: 'Streak Saver used',
+   297→        description: 'Your streak stays alive. Keep learning to earn more.',
+   298→      });
+   299→    }
+   300→    void appendEvent(e, zone).catch(() => {
+   301→      // event log unavailable (private mode) — the snapshot mirror keeps the
+   302→      // session working; the learner sees an honest error if saving failed.
+   303→    });
+   304→  }, []);
+   305→
+   306→  // ---- mutations ----
+   307→  const finishFirstRun = (r: FirstRunResult) => {
+   308→    dispatch({ type: 'onboarding-finished', profile: r.profile, plan: r.plan });
+   309→    setEditProfile(false);
+   310→    setScreen('home');
+   311→  };
+   312→
+   313→  const saveDraft = (draft: WizardDraft | null) => {
+   314→    dispatch({ type: 'draft-saved', draft: draft as unknown as Record<string, unknown> | null });
+   315→  };
+   316→
+   317→  const patchSettings = (patch: Partial<Settings>) => {
+   318→    dispatch({ type: 'settings-changed', patch });
+   319→  };
+   320→
+   321→  const patchPlan = (patch: Partial<NonNullable<LumioState['plan']>>) => {
+   322→    if (!state?.plan) return;
+   323→    dispatch({ type: 'plan-changed', plan: { ...state.plan, ...patch } });
+   324→  };
+   325→
+   326→  const markPlanReviewed = () => {
+   327→    if (!state) return;
+   328→    const today = dayKey(new Date(), tz);
+   329→    if (state.planReviews[today]) return;
+   330→    // The activity makes the daily quest claimable; the Claim button grants the XP.
+   331→    dispatch({ type: 'plan-reviewed', date: today });
+   332→  };
+   333→
+   334→  const claimQuest = (questId: string, periodKey: string, xp: number) => {
+   335→    if (!state) return;
+   336→    if (state.quests.some((c) => c.questId === questId && c.periodKey === periodKey)) return;
+   337→    dispatch({ type: 'quest-claimed', questId, periodKey, xp, date: dayKey(new Date(), tz) });
+   338→  };
+   339→
+   340→  const finishQuiz = (chapterIndex: number, outcome: QuizOutcome) => {
+   341→    dispatch({
+   342→      type: 'quiz-attempted',
+   343→      chapterId: `${state?.profile?.band ?? 'sec'}#${chapterIndex}`,
+   344→      score: outcome.score,
+   345→      nq: outcome.nq,
+   346→      wrongIds: outcome.wrongIds,
+   347→      theme,
+   348→      date: dayKey(new Date(), tz),
+   349→    });
+   350→    setQuiz(null);
+   351→    setReader(null);
+   352→    setScreen('home');
+   353→  };
+   354→
+   355→  const flashcardsReviewed = (chapterIndex: number) => {
+   356→    dispatch({ type: 'flashcards-reviewed', chapterId: `${state?.profile?.band ?? 'sec'}#${chapterIndex}`, date: dayKey(new Date(), tz) });
+   357→  };
+   358→
+   359→  // ---- chunk 3: games, labs and the practice engine ----
+   360→  const winGame = (gameId: string) => {
+   361→    const prev = stateRef.current;
+   362→    const firstClear = !prev?.xpLedger.some((x) => x.source === 'game' && x.ref === gameId);
+   363→    dispatch({
+   364→      type: 'game-won',
+   365→      gameId,
+   366→      xp: GAME_XP[gameId] ?? 20,
+   367→      date: dayKey(new Date(), tz),
+   368→      lab: LAB_GAME_IDS.has(gameId),
+   369→      firstClear,
+   370→    });
+   371→  };
+   372→  const reviewCard = (cardId: string, correct: boolean) => {
+   373→    dispatch({ type: 'card-reviewed', cardId, correct, date: dayKey(new Date(), tz) });
+   374→  };
+   375→  const finishPractice = (kind: PracticeKind) => {
+   376→    dispatch({ type: 'practice-done', kind, xp: PRACTICE_XP[kind] ?? 10, date: dayKey(new Date(), tz) });
+   377→  };
+   378→  const finishLegendary = () => {
+   379→    dispatch({ type: 'legendary-completed', date: dayKey(new Date(), tz) });
+   380→  };
+   381→  const tagMistake = (questionId: string, tag: MistakeTag | null) => {
+   382→    dispatch({ type: 'mistake-tagged', questionId, tag });
+   383→  };
+   384→
+   385→  // ---- chunk 5B: AI practice-only saves (kind 'notes' | 'practice') ----
+   386→  // Never touches XP/streak/mastery — the projection keeps the record in
+   387→  // state.aiContent (deduped by id, capped at 30, capped by applyEvent).
+   388→  const saveAiContent = (
+   389→    kind: 'notes' | 'practice',
+   390→    id: string,
+   391→    date: string,
+   392→    payload: NotesAiResult | { items: PracticeAiItem[] },
+   393→    label: string,
+   394→  ) => {
+   395→    dispatch({ type: 'ai-generated', id, kind, date, payload, label });
+   396→  };
+   397→  const saveAiNotes = (args: {
+   398→    id: string;
+   399→    kind: 'notes';
+   400→    date: string;
+   401→    payload: NotesAiResult;
+   402→    label: string;
+   403→  }) => {
+   404→    saveAiContent(args.kind, args.id, args.date, args.payload, args.label);
+   405→  };
+   406→
+   407→  // ---- chunk 4A: focus suite, mocks, streak freezes, reschedule ----
+   408→  const finishFocusBlock = (mins: number) => {
+   409→    dispatch({ type: 'focus-block-done', date: dayKey(new Date(), tz), mins });
+   410→  };
+   411→  const recordMock = (mock: { date: string; subject: string; score: number; total: number; weakChapters: number[] }) => {
+   412→    dispatch({ type: 'mock-recorded', mock });
+   413→  };
+   414→  const useFreeze = (date: string) => {
+   415→    dispatch({ type: 'freeze-used', date });
+   416→  };
+   417→  const rescheduleSession = (date: string, index: number, startMin: number | null) => {
+   418→    dispatch({ type: 'session-rescheduled', date, index, startMin });
+   419→  };
+   420→
+   421→  // ---- chunk 4C: XP & Streak dashboard ----
+   422→  const completeSession = (date: string, index: number, onTime: boolean) => {
+   423→    dispatch({ type: 'session-done', date, index, onTime });
+   424→  };
+   425→  const buySaver = () => {
+   426→    dispatch({ type: 'saver-bought', date: dayKey(new Date(), tz) });
+   427→  };
+   428→
+   429→  // ---- chunk 4B: study tools ----
+   430→  const addNote = (note: { id: string; name: string; text: string; added: string }) => {
+   431→    dispatch({ type: 'note-added', note });
+   432→  };
+   433→  const removeNote = (noteId: string) => {
+   434→    dispatch({ type: 'note-removed', noteId });
+   435→  };
+   436→  const addVideo = (video: { id: string; videoId: string; sourceUrl: string; added: string }) => {
+   437→    dispatch({ type: 'video-added', video });
+   438→  };
+   439→  const removeVideo = (videoId: string) => {
+   440→    dispatch({ type: 'video-removed', videoId });
+   441→  };
+   442→
+   443→  const importJson = (json: string) => {
+   444→    if (!state) return { ok: false as const, error: 'Not ready yet.' };
+   445→    const parsed = parseImport(json);
+   446→    if ('error' in parsed) return { ok: false as const, error: parsed.error };
+   447→    if ('report' in parsed) {
+   448→      // legacy lumio-s1 import: report skipped keys honestly (R13)
+   449→      dispatch({ type: 'bootstrap', state: projectState(normalizeState(parsed.state), new Date(), parsed.state.profile?.tz ?? DEFAULT_TZ) });
+   450→      const skipped = parsed.report.skipped.length
+   451→        ? ` Skipped unknown keys: ${parsed.report.skipped.join(', ')}.`
+   452→        : ' No unknown keys were skipped.';
+   453→      return {
+   454→        ok: true as const,
+   455→        message: `Prototype import complete. Preserved: ${parsed.report.preserved.join(', ')}.${skipped}`,
+   456→      };
+   457→    }
+   458→    dispatch({ type: 'bootstrap', state: projectState(normalizeState(parsed.state), new Date(), parsed.state.profile?.tz ?? DEFAULT_TZ) });
+   459→    return { ok: true as const, message: 'Lumio v2 import complete.' };
+   460→  };
+   461→
+   462→  const resetAll = () => {
+   463→    void resetAllStorage().then(() => {
+   464→      const fresh = defaultState();
+   465→      stateRef.current = fresh;
+   466→      setState(fresh);
+   467→      setSaveError(undefined);
+   468→      setScreen('home');
+   469→      setReader(null);
+   470→      setQuiz(null);
+   471→      setEditProfile(false);
+   472→    });
+   473→  };
+   474→
+   475→  const applySwUpdate = () => {
+   476→    swWaiting?.postMessage({ type: 'SKIP_WAITING' });
+   477→    setSwWaiting(null);
+   478→    // the new worker takes control; a reload follows its controllerchange
+   479→    navigator.serviceWorker?.addEventListener('controllerchange', () => window.location.reload(), { once: true });
+   480→  };
+   481→
+   482→  if (!hydrated || !state) {
+   483→    // brief hydration shell; content pops in client-side
+   484→    return (
+   485→      <div className="flex min-h-dvh items-center justify-center bg-background">
+   486→        <p className="text-sm text-muted-foreground" aria-live="polite">Loading Lumio…</p>
+   487→      </div>
+   488→    );
+   489→  }
+   490→
+   491→  const firstRun = !state.profile;
+   492→  const draft = (state.draft as unknown as WizardDraft | null) ?? null;
+   493→  const xp = totalXp(state.xpLedger);
+   494→  const currentStreak = streakFrom(state.days, dayKey(now, tz));
+   495→  const activeBand = state.profile?.band ?? 'sec';
+   496→
+   497→  // pre-filled wizard draft when editing the profile (keeps all progress)
+   498→  const editDraft = state.profile ? draftFromProfile(state.profile, state.plan) : null;
+   499→  const effectiveDraft: WizardDraft | null = editProfile && editDraft
+   500→    ? editDraft
+   501→    : firstRun && draft
+   502→      ? { ...EMPTY_DRAFT, ...draft }
+   503→      : null;
+   504→
+   505→  // chunk 5B: floating AI slot — trigger button (right side only, so it never
+   506→  // overlaps the SW-update toast at bottom-24 inset-x-3) + the StudyBuddy panel.
+   507→  const aiSlot = (
+   508→    <>
+   509→      {aiAvailable && !firstRun && !studyBuddyOpen && (
+   510→        <button
+   511→          type="button"
+   512→          onClick={() => setStudyBuddyOpen(true)}
+   513→          aria-haspopup="dialog"
+   514→          className="press fixed bottom-24 right-3 z-40 flex min-h-[44px] items-center gap-2 rounded-full border border-border bg-card px-4 text-sm font-semibold shadow-lg md:bottom-6 md:right-6"
+   515→        >
+   516→          <Sparkles className="size-5 text-primary" aria-hidden="true" />
+   517→          {tr('ai.askTitle')}
+   518→        </button>
+   519→      )}
+   520→      <StudyBuddy
+   521→        open={studyBuddyOpen}
+   522→        onOpenChange={setStudyBuddyOpen}
+   523→        state={state}
+   524→        chapter={studyBuddyChapter}
+   525→        aiAvailable={aiAvailable}
+   526→        signedIn={signedIn}
+   527→        aiEnabled={aiEnabled}
+   528→        demo={aiDemo}
+   529→        onGoSettings={() => { setScreen('settings'); setReader(null); setQuiz(null); }}
+   530→      />
+   531→    </>
+   532→  );
+   533→
+   534→  const renderScreen = () => {
+   535→    if (firstRun || editProfile) {
+   536→      return (
+   537→        <Onboarding
+   538→          draft={effectiveDraft}
+   539→          onDraftChange={saveDraft}
+   540→          onFinish={finishFirstRun}
+   541→          onCancel={firstRun ? undefined : () => setEditProfile(false)}
+   542→        />
+   543→      );
+   544→    }
+   545→    if (quiz !== null) {
+   546→      const ch = state.profile?.band ? state.profile.band : 'sec';
+   547→      return (
+   548→        <Quiz
+   549→          state={state}
+   550→          band={ch}
+   551→          chapterIndex={quiz}
+   552→          chapter={BAND_CHAPTER(ch, quiz)}
+   553→          onBack={() => setQuiz(null)}
+   554→          onFinish={(o) => finishQuiz(quiz, o)}
+   555→          aiAvailable={aiAvailable}
+   556→          signedIn={signedIn}
+   557→          aiEnabled={aiEnabled}
+   558→          demo={aiDemo}
+   559→        />
+   560→      );
+   561→    }
+   562→    if (reader !== null) {
+   563→      return (
+   564→        <Reader
+   565→          state={state}
+   566→          chapterIndex={reader}
+   567→          onBack={() => setReader(null)}
+   568→          onStartQuiz={() => setQuiz(reader)}
+   569→          onFlashcardsReviewed={() => flashcardsReviewed(reader)}
+   570→          onAskAi={aiAvailable ? () => setStudyBuddyOpen(true) : undefined}
+   571→        />
+   572→      );
+   573→    }
+   574→    switch (screen) {
+   575→      case 'study':
+   576→        return <Study state={state} onOpenChapter={(i) => setReader(i)} />;
+   577→      case 'board':
+   578→        return <BoardGuide state={state} />;
+   579→      case 'planner':
+   580→        return (
+   581→          <Planner
+   582→            state={state}
+   583→            now={now}
+   584→            onReschedule={rescheduleSession}
+   585→            onSessionDone={completeSession}
+   586→          />
+   587→        );
+   588→      case 'xpstreak':
+   589→        return (
+   590→          <XpStreakDashboard state={state} now={now} onBuySaver={buySaver} onUseSaver={useFreeze} />
+   591→        );
+   592→      case 'focus':
+   593→        return <Focus state={state} now={now} onFinishBlock={finishFocusBlock} />;
+   594→      case 'tools':
+   595→        return (
+   596→          <StudyTools
+   597→            state={state}
+   598→            now={now}
+   599→            onAddNote={addNote}
+   600→            onRemoveNote={removeNote}
+   601→            onAddVideo={addVideo}
+   602→            onRemoveVideo={removeVideo}
+   603→            aiAvailable={aiAvailable}
+   604→            signedIn={signedIn}
+   605→            aiEnabled={aiEnabled}
+   606→            demo={aiDemo}
+   607→            onSaveAi={saveAiNotes}
+   608→          />
+   609→        );
+   610→      case 'guardian':
+   611→        return (
+   612→          <GuardianScreen
+   613→            state={state}
+   614→            now={now}
+   615→            onSettings={patchSettings}
+   616→            onReset={resetAll}
+   617→          />
+   618→        );
+   619→      case 'progress':
+   620→        return <ProgressScreen state={state} now={now} />;
+   621→      case 'ach':
+   622→        return <AchievementsScreen state={state} now={now} />;
+   623→      case 'games':
+   624→        return (
+   625→          <GamesScreen
+   626→            state={state}
+   627→            band={activeBand}
+   628→            today={dayKey(now, tz)}
+   629→            onGameWin={winGame}
+   630→            onCardReview={reviewCard}
+   631→            onPracticeDone={finishPractice}
+   632→            onLegendary={finishLegendary}
+   633→            onTagMistake={tagMistake}
+   634→            onOpenChapter={(i) => setReader(i)}
+   635→            aiAvailable={aiAvailable}
+   636→            signedIn={signedIn}
+   637→            aiEnabled={aiEnabled}
+   638→            demo={aiDemo}
+   639→            mocksPanel={
+   640→              <MockTests
+   641→                state={state}
+   642→                today={dayKey(now, tz)}
+   643→                band={activeBand}
+   644→                onRecordMock={recordMock}
+   645→              />
+   646→            }
+   647→          />
+   648→        );
+   649→      case 'settings':
+   650→        return (
+   651→          <SettingsScreen
+   652→            state={state}
+   653→            onSettings={patchSettings}
+   654→            onPlan={patchPlan}
+   655→            onImport={importJson}
+   656→            onReset={resetAll}
+   657→            onEditProfile={() => setEditProfile(true)}
+   658→            saveError={saveError}
+   659→            onLang={(l) => dispatch({ type: 'profile-patched', patch: { lang: l } as Partial<Profile> })}
+   660→            accountSlot={
+   661→              <AccountSettingsCard
+   662→                lang={lang}
+   663→                user={accountUser}
+   664→                avail={accountAvail}
+   665→                devOutbox={devOutbox}
+   666→                onSignedIn={handleSignedIn}
+   667→                onSignedOut={handleSignedOut}
+   668→                onDeleted={handleDeleted}
+   669→              />
+   670→            }
+   671→          />
+   672→        );
+   673→      default:
+   674→        return (
+   675→          <Home
+   676→            state={state}
+   677→            now={now}
+   678→            theme={theme}
+   679→            onOpenSettings={() => setScreen('settings')}
+   680→            onOpenStudy={() => setScreen('study')}
+   681→            onOpenChapter={(i) => setReader(i)}
+   682→            onPlanReviewed={markPlanReviewed}
+   683→            onQuestClaim={claimQuest}
+   684→            onOpenPlanner={() => setScreen('planner')}
+   685→            onOpenFocus={() => setScreen('focus')}
+   686→            onUseFreeze={useFreeze}
+   687→            onSessionDone={(index, onTime) => completeSession(dayKey(now, tz), index, onTime)}
+   688→            onOpenXpStreak={() => setScreen('xpstreak')}
+   689→          />
+   690→        );
+   691→    }
+   692→  };
+   693→
+   694→  return (
+   695→    <>
+   696→      <Shell
+   697→        screen={screen}
+   698→        lang={lang}
+   699→        onScreen={(s) => { setScreen(s); setReader(null); setQuiz(null); }}
+   700→        theme={theme}
+   701→        density={density}
+   702→        calm={calm}
+   703→        band={activeBand}
+   704→        xp={xp}
+   705→        streak={currentStreak}
+   706→        accountSlot={accountSlot}
+   707→        aiSlot={aiSlot}
+   708→      >
+   709→        {renderScreen()}
+   710→      </Shell>
+   711→      {swWaiting && (
+   712→        <div
+   713→          role="status"
+   714→          className="fixed inset-x-3 bottom-24 z-50 flex items-center gap-3 rounded-2xl border border-border bg-card p-3 shadow-lg md:bottom-6 md:left-auto md:right-6 md:w-80"
+   715→        >
+   716→          <RefreshCw className="size-5 shrink-0 text-primary" aria-hidden="true" />
+   717→          <div className="min-w-0 flex-1">
+   718→            <p className="text-sm font-semibold">New version available</p>
+   719→            <p className="text-xs text-muted-foreground">Refresh to get the latest Lumio. Your progress is safe.</p>
+   720→          </div>
+   721→          <Button size="sm" onClick={applySwUpdate}>Refresh</Button>
+   722→        </div>
+   723→      )}
+   724→      {devicePrompt && (
+   725→        <DevicePrompt
+   726→          lang={lang}
+   727→          onKeep={() => {
+   728→            recordAccountId(devicePrompt.userId);
+   729→            setDevicePrompt(null);
+   730→          }}
+   731→          onFresh={() => {
+   732→            recordAccountId(devicePrompt.userId);
+   733→            setDevicePrompt(null);
+   734→            resetAll();
+   735→          }}
+   736→        />
+   737→      )}
+   738→    </>
+   739→  );
+   740→}
+   741→
+   742→// small local helper
+   743→function BAND_CHAPTER(band: keyof typeof BANDS, index: number) {
+   744→  const chapters = BANDS[band].chapters;
+   745→  return chapters[Math.min(Math.max(0, index), chapters.length - 1)];
+   746→}
+   747→

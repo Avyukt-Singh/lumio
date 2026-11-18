@@ -1,0 +1,13 @@
+const {chromium}=require(require('child_process').execSync('npm root -g').toString().trim()+'/playwright');
+(async()=>{const b=await chromium.launch();const p=await b.newPage({viewport:{width:1200,height:800}});p.setDefaultTimeout(4000);const errs=[];p.on('pageerror',e=>errs.push(e.message));
+const T=async()=>(await p.locator('#root').innerText()).replace(/\n+/g,' | ');
+await p.goto('file:///home/claude/lumio/lumio.html');await p.waitForTimeout(250);
+await p.getByText('School Student').click();await p.locator('#root select').nth(0).selectOption({label:'CBSE'});await p.locator('#root select').nth(1).selectOption({label:'Class 11'});await require('./_ob.js').finish(p);await p.waitForTimeout(250);
+await p.locator('.nb',{hasText:'Practice'}).click();await p.locator('[data-go="ship"]').first().click();
+const set=async(eng,n,fuel,hull,pay,mis)=>{await p.locator('#s1').selectOption(String(eng));await p.locator('#s7').fill(String(n));await p.locator('#s2').fill(String(fuel));await p.locator('#s3').fill(String(hull));await p.locator('#s4').fill(String(pay));await p.locator('#s6').selectOption(String(mis));await p.locator('[data-act="srun"]').click();await p.waitForTimeout(150);const t=await T();return (t.match(/(✅ Mission success|❌ Mission failed)[^|]*\|[^|]*/)||[''])[0].slice(0,110)};
+console.log('default Chem-S x1 -> LEO :',await set(0,1,100,8,5,0));
+console.log('Hydro-X x2, fuel 220, hull 2, pay 1 -> LEO:',await set(1,2,220,2,1,0),'| xp',await p.evaluate("S.xp"));
+console.log('Hydro-X x1 -> LEO (low thrust):',await set(1,1,215,2,1,0));
+console.log('Chem-S x1 -> Lunar:',await set(0,1,60,8,5,1));
+await p.locator('[data-act="ssv"]').click();console.log('saved design has engines:',await p.evaluate("JSON.stringify(S.ships[0])"));
+console.log('mission text:',(await T()).match(/Needs Δv ≈ 9\.0[^|]*/)?.[0]?.slice(0,90),errs);await b.close()})().catch(e=>console.log('FAIL',e.message.split('\n')[0]));

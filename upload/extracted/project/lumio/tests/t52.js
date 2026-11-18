@@ -1,0 +1,16 @@
+const {chromium}=require(require('child_process').execSync('npm root -g').toString().trim()+'/playwright');
+const STUB=`self.loadPyodide=async()=>{let H='';return{setStdout(o){},runPython(c){H=c},globals:{get(n){return(code,fn,tests)=>{const x=new XMLHttpRequest();x.open('POST','http://127.0.0.1:3199/run',false);x.send(JSON.stringify({h:H,code,fn,tests}));return x.responseText}}}}};`;
+(async()=>{const b=await chromium.launch();const p=await b.newPage({viewport:{width:1200,height:800}});p.setDefaultTimeout(6000);const errs=[];p.on('pageerror',e=>errs.push(e.message));
+await p.route('https://cdn.jsdelivr.net/pyodide/**',r=>r.fulfill({status:200,contentType:'text/javascript',body:STUB}));
+await p.goto('file:///home/claude/lumio/lumio.html');await p.waitForTimeout(250);
+await p.getByText('School Student').click();await p.locator('#root select').nth(0).selectOption({label:'CBSE'});await p.locator('#root select').nth(1).selectOption({label:'Class 11'});await require('./_ob.js').finish(p);await p.waitForTimeout(250);
+await p.locator('.nb',{hasText:'Practice'}).click();await p.locator('[data-go="code"]').first().click();
+const idx=await p.evaluate("EXS.findIndex(x=>x[0]==='is_even')");const T=async()=>(await p.locator('#root').innerText()).replace(/\n+/g,' | ');
+const run=async(i,code,wait)=>{await p.locator('[data-ex="'+i+'"]').click();await p.locator('#ce').fill(code);await p.locator('[data-act="cr"]').click();await p.waitForTimeout(wait||1500);return T()};
+let t=await run(idx,'def is_even(n):\n    pass');console.log('buggy:',/All tests pass/.test(t)?'PASS?!':'fails',(t.match(/is_even\(4\)[^|]*\|?[^|]*\|?[^|]*/)||[''])[0].slice(0,80));
+t=await run(idx,'def is_even(n):\n    return n % 2 == 0');console.log('correct:',/All tests pass/.test(t),'| xp',await p.evaluate("S.xp"));
+t=await run(idx,'def is_even(n) return');console.log('syntax error shown:',(t.match(/SyntaxError[^|]*/)||['none'])[0].slice(0,70));
+t=await run(idx,'def other(n):\n    return 1');console.log('wrong name:',(t.match(/Function is_even not found[^|]*/)||['none'])[0].slice(0,70));
+const di=await p.evaluate("EXS.findIndex(x=>x[0]==='total_even')");
+t=await run(di,'def total_even(nums):\n    return sum(n for n in nums if n%2==0)');console.log('debug exercise fixed:',/All tests pass/.test(t),'| xp',await p.evaluate("S.xp"));
+console.log(errs);await b.close()})().catch(e=>console.log('FAIL',e.message.split('\n')[0]));

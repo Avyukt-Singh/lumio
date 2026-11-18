@@ -1,0 +1,1462 @@
+     1→'use client';
+     2→
+     3→import { useEffect, useRef, useState, type ReactNode } from 'react';
+     4→import {
+     5→  ArrowRight,
+     6→  Check,
+     7→  ClipboardList,
+     8→  Clock,
+     9→  Eye,
+    10→  FlaskConical,
+    11→  Layers,
+    12→  NotebookPen,
+    13→  Shuffle,
+    14→  Target,
+    15→  Timer,
+    16→  TrendingUp,
+    17→  Trophy,
+    18→  X,
+    19→  type LucideIcon,
+    20→} from 'lucide-react';
+    21→import { Button } from '@/components/ui/button';
+    22→import { Progress } from '@/components/ui/progress';
+    23→import { Badge } from '@/components/ui/badge';
+    24→import { Mascot } from '../Mascot';
+    25→import { cn } from '@/lib/utils';
+    26→import { tFor } from '@/lib/lumio/i18n';
+    27→import { BANDS, type Band, type Question } from '@/lib/lumio/content';
+    28→import { flashcardsFor, sentencesOf, type Flashcard } from '@/lib/lumio/chapterContent';
+    29→import {
+    30→  weakTopics,
+    31→  practiceDoneToday,
+    32→  masteredCount,
+    33→  legendaryDone,
+    34→  chapterId,
+    35→  PRACTICE_XP,
+    36→  LEGENDARY_XP,
+    37→} from '@/lib/lumio/domain';
+    38→import type { LumioState, PracticeKind, MistakeTag } from '@/lib/lumio/types';
+    39→
+    40→/**
+    41→ * Practice hub (chunk 3, master prompt 7.6): eight honest practice tools.
+    42→ * Every tool calls onPracticeDone / onLegendary exactly once per completion;
+    43→ * the parent enforces the XP-once-per-day rule. Nothing here invents facts:
+    44→ * explanations and worked steps are derived only from the question content.
+    45→ */
+    46→
+    47→export interface PracticeHubProps {
+    48→  state: LumioState;
+    49→  /** learner-local yyyy-mm-dd */
+    50→  today: string;
+    51→  onCardReview: (cardId: string, correct: boolean) => void;
+    52→  onPracticeDone: (kind: PracticeKind) => void;
+    53→  onLegendary: () => void;
+    54→  onTagMistake: (questionId: string, tag: MistakeTag | null) => void;
+    55→  onOpenChapter: (chapterIndex: number) => void;
+    56→  /** chunk 4A: self-reported mock tests tab (rendered node passed by the parent) */
+    57→  mocks?: ReactNode;
+    58→}
+    59→
+    60→type TabId =
+    61→  | 'flashcards'
+    62→  | 'weak'
+    63→  | 'drill'
+    64→  | 'adaptive'
+    65→  | 'revision'
+    66→  | 'legendary'
+    67→  | 'errorlab'
+    68→  | 'notebook'
+    69→  | 'mocks';
+    70→
+    71→const TABS: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
+    72→  { id: 'flashcards', label: 'Flashcards', icon: Layers },
+    73→  { id: 'weak', label: 'Weak topics', icon: Target },
+    74→  { id: 'drill', label: 'Timed drill', icon: Timer },
+    75→  { id: 'adaptive', label: 'Adaptive practice', icon: TrendingUp },
+    76→  { id: 'revision', label: 'Mixed revision', icon: Shuffle },
+    77→  { id: 'legendary', label: 'Legendary', icon: Trophy },
+    78→  { id: 'errorlab', label: 'Error lab', icon: FlaskConical },
+    79→  { id: 'notebook', label: 'Mistake notebook', icon: NotebookPen },
+    80→  { id: 'mocks', label: 'Mock tests', icon: ClipboardList },
+    81→];
+    82→
+    83→const MISTAKE_TAGS: Array<{ tag: MistakeTag; label: string }> = [
+    84→  { tag: 'concept', label: 'Concept gap' },
+    85→  { tag: 'careless', label: 'Careless slip' },
+    86→  { tag: 'calculation', label: 'Calculation error' },
+    87→  { tag: 'fact', label: 'Forgot the fact' },
+    88→];
+    89→
+    90→const DRILL_MS = 60000;
+    91→const DRILL_UNTIMED_COUNT = 10;
+    92→const ADAPTIVE_COUNT = 8;
+    93→const REVISION_COUNT = 10;
+    94→const LEGENDARY_COUNT = 10;
+    95→
+    96→interface QuizItem {
+    97→  key: string;
+    98→  q: Question;
+    99→  chapterTitle: string;
+   100→}
+   101→
+   102→interface MissedItem {
+   103→  id: string;
+   104→  chapterTitle: string;
+   105→  subject: string;
+   106→  q: Question;
+   107→}
+   108→
+   109→/** Deterministic Fisher-Yates so repeats across rounds vary with the seed. */
+   110→function seededShuffle<T>(items: T[], seed: number): T[] {
+   111→  const arr = [...items];
+   112→  let s = seed >>> 0 || 1;
+   113→  const rand = () => {
+   114→    s = (s * 1664525 + 1013904223) >>> 0;
+   115→    return s / 4294967296;
+   116→  };
+   117→  for (let i = arr.length - 1; i > 0; i--) {
+   118→    const j = Math.floor(rand() * (i + 1));
+   119→    [arr[i], arr[j]] = [arr[j], arr[i]];
+   120→  }
+   121→  return arr;
+   122→}
+   123→
+   124→/** Resolve stable question ids (`${band}#${ch}#${q}`) against the band content. */
+   125→function resolveMissed(band: Band, wrong: Record<string, 1>): MissedItem[] {
+   126→  const out: MissedItem[] = [];
+   127→  for (const id of Object.keys(wrong)) {
+   128→    const parts = id.split('#');
+   129→    if (parts.length !== 3 || parts[0] !== band) continue;
+   130→    const ci = Number(parts[1]);
+   131→    const qi = Number(parts[2]);
+   132→    if (!Number.isFinite(ci) || !Number.isFinite(qi)) continue;
+   133→    const ch = BANDS[band].chapters[ci];
+   134→    const q = ch?.questions[qi];
+   135→    if (!ch || !q) continue;
+   136→    out.push({ id, chapterTitle: ch.title, subject: ch.subject, q });
+   137→  }
+   138→  return out;
+   139→}
+   140→
+   141→/** Five worked-solution steps derived only from the question's own explanation. */
+   142→function workedSteps(
+   143→  q: Question,
+   144→  chapterTitle: string,
+   145→  subject: string,
+   146→): Array<{ title: string; body: string }> {
+   147→  const sents = sentencesOf(q.explanation);
+   148→  const first = sents[0] ?? q.explanation.trim();
+   149→  const rest = sents.slice(1).join(' ');
+   150→  return [
+   151→    {
+   152→      title: 'What is asked',
+   153→      body: `A ${subject} question from "${chapterTitle}" — pick the one option that answers it.`,
+   154→    },
+   155→    { title: 'What you know', body: q.text },
+   156→    { title: 'Key idea', body: first || '—' },
+   157→    { title: 'Working through it', body: rest || first },
+   158→    { title: 'Answer', body: q.options[q.answer] },
+   159→  ];
+   160→}
+   161→
+   162→function OptionButton({
+   163→  label,
+   164→  index,
+   165→  state,
+   166→  onClick,
+   167→}: {
+   168→  label: string;
+   169→  index: number;
+   170→  state: 'idle' | 'picked' | 'correct' | 'wrong' | 'dim';
+   171→  onClick: () => void;
+   172→}) {
+   173→  return (
+   174→    <button
+   175→      type="button"
+   176→      onClick={onClick}
+   177→      aria-pressed={state === 'picked'}
+   178→      className={cn(
+   179→        'press flex min-h-[52px] w-full items-center gap-3 rounded-xl border-2 p-3 text-left text-sm font-medium',
+   180→        state === 'idle' && 'border-border hover:border-primary/40',
+   181→        state === 'picked' && 'border-primary bg-primary/10',
+   182→        state === 'correct' && 'border-success bg-success-soft text-success-soft-foreground',
+   183→        state === 'wrong' && 'border-destructive bg-destructive/10 text-destructive',
+   184→        state === 'dim' && 'border-border opacity-60',
+   185→      )}
+   186→    >
+   187→      <span
+   188→        className={cn(
+   189→          'flex size-7 shrink-0 items-center justify-center rounded-full border text-xs font-bold',
+   190→          state === 'correct' && 'border-success bg-success text-success-foreground',
+   191→          state === 'wrong' && 'border-destructive bg-destructive text-destructive-foreground',
+   192→          state !== 'correct' && state !== 'wrong' && 'border-border',
+   193→        )}
+   194→        aria-hidden="true"
+   195→      >
+   196→        {String.fromCharCode(65 + index)}
+   197→      </span>
+   198→      {label}
+   199→    </button>
+   200→  );
+   201→}
+   202→
+   203→function Feedback({
+   204→  correct,
+   205→  answerText,
+   206→  explanation,
+   207→}: {
+   208→  correct: boolean;
+   209→  answerText: string;
+   210→  explanation: string;
+   211→}) {
+   212→  return (
+   213→    <div
+   214→      role="status"
+   215→      aria-live="polite"
+   216→      className={cn(
+   217→        'anim-pop mt-4 rounded-xl p-4',
+   218→        correct ? 'bg-success-soft text-success-soft-foreground' : 'bg-gold-soft',
+   219→      )}
+   220→      style={correct ? undefined : { color: 'var(--gold)' }}
+   221→    >
+   222→      <p className="flex items-center gap-2 text-sm font-bold">
+   223→        {correct ? (
+   224→          <>
+   225→            <Check className="size-4" aria-hidden="true" /> Correct!
+   226→          </>
+   227→        ) : (
+   228→          <>
+   229→            <X className="size-4" aria-hidden="true" /> Not quite — the answer is &ldquo;{answerText}
+   230→            &rdquo;.
+   231→          </>
+   232→        )}
+   233→      </p>
+   234→      <p className="mt-1 text-sm">{explanation}</p>
+   235→    </div>
+   236→  );
+   237→}
+   238→
+   239→function TabCard({ children }: { children: ReactNode }) {
+   240→  return <div className="rounded-2xl border border-border bg-card p-4 sm:p-6">{children}</div>;
+   241→}
+   242→
+   243→function EmptyState({ note }: { note: string }) {
+   244→  return (
+   245→    <div className="flex flex-col items-center gap-3 py-6 text-center">
+   246→      <Mascot pose="curious" size="lg" />
+   247→      <p className="max-w-md text-sm text-muted-foreground">{note}</p>
+   248→    </div>
+   249→  );
+   250→}
+   251→
+   252→// ---------- 1. Flashcards (Leitner SRS) ----------
+   253→
+   254→function FlashcardsTab({
+   255→  state,
+   256→  today,
+   257→  band,
+   258→  onCardReview,
+   259→  onPracticeDone,
+   260→}: {
+   261→  state: LumioState;
+   262→  today: string;
+   263→  band: Band;
+   264→  onCardReview: (cardId: string, correct: boolean) => void;
+   265→  onPracticeDone: (kind: PracticeKind) => void;
+   266→}) {
+   267→  const deck = BANDS[band].chapters.flatMap((ch, i) => flashcardsFor(band, i, ch));
+   268→  const due = deck.filter((c) => {
+   269→    const s = state.srs[c.id];
+   270→    return !s || s.due <= today;
+   271→  });
+   272→  const boxCounts = [1, 2, 3, 4, 5].map((b) => deck.filter((c) => state.srs[c.id]?.box === b).length);
+   273→  const unseen = deck.filter((c) => !state.srs[c.id]).length;
+   274→  const nextDue = deck.reduce<string | null>((min, c) => {
+   275→    const d = state.srs[c.id]?.due;
+   276→    if (d && d > today && (min === null || d < min)) return d;
+   277→    return min;
+   278→  }, null);
+   279→  const collected = practiceDoneToday(state, 'srs', today);
+   280→
+   281→  const [queue, setQueue] = useState<Flashcard[] | null>(null);
+   282→  const [pos, setPos] = useState(0);
+   283→  const [flipped, setFlipped] = useState(false);
+   284→  const [reviewed, setReviewed] = useState(0);
+   285→  const finishedRef = useRef(false);
+   286→
+   287→  const startSession = () => {
+   288→    if (due.length === 0) return;
+   289→    finishedRef.current = false;
+   290→    setQueue(due);
+   291→    setPos(0);
+   292→    setFlipped(false);
+   293→    setReviewed(0);
+   294→  };
+   295→
+   296→  const endSession = () => {
+   297→    setQueue(null);
+   298→    setFlipped(false);
+   299→  };
+   300→
+   301→  const review = (correct: boolean) => {
+   302→    if (!queue || pos >= queue.length) return;
+   303→    const card = queue[pos];
+   304→    onCardReview(card.id, correct);
+   305→    setFlipped(false);
+   306→    setReviewed((r) => r + 1);
+   307→    const np = pos + 1;
+   308→    setPos(np);
+   309→    if (np >= queue.length && !finishedRef.current) {
+   310→      finishedRef.current = true;
+   311→      onPracticeDone('srs');
+   312→    }
+   313→  };
+   314→
+   315→  // Overview
+   316→  if (queue === null) {
+   317→    return (
+   318→      <TabCard>
+   319→        <h2 className="font-heading text-lg font-semibold">Flashcards</h2>
+   320→        <p className="mt-1 text-sm text-muted-foreground">
+   321→          {due.length === 1 ? '1 card due today' : `${due.length} cards due today`}
+   322→        </p>
+   323→        <p className="mt-1 text-xs text-muted-foreground">
+   324→          Box 1: {boxCounts[0]} &middot; Box 2: {boxCounts[1]} &middot; Box 3: {boxCounts[2]} &middot;
+   325→          Box 4: {boxCounts[3]} &middot; Box 5: {boxCounts[4]} &middot; Not started: {unseen}
+   326→        </p>
+   327→
+   328→        {due.length === 0 ? (
+   329→          <div className="mt-2">
+   330→            <EmptyState note="Nothing due right now — cards return after 1, 2, 4, 8 or 16 days depending on the box they reach." />
+   331→            {nextDue !== null && (
+   332→              <p className="text-center text-sm text-muted-foreground">
+   333→                Next cards return on {nextDue}.
+   334→              </p>
+   335→            )}
+   336→          </div>
+   337→        ) : (
+   338→          <div className="mt-4">
+   339→            <Button className="min-h-[44px]" onClick={startSession}>
+   340→              Start review session
+   341→            </Button>
+   342→          </div>
+   343→        )}
+   344→
+   345→        <p className="mt-4 text-xs text-muted-foreground">
+   346→          New cards appear as you study chapters.
+   347→        </p>
+   348→      </TabCard>
+   349→    );
+   350→  }
+   351→
+   352→  // Session summary
+   353→  if (pos >= queue.length) {
+   354→    return (
+   355→      <TabCard>
+   356→        <div className="flex flex-col items-center gap-3 py-4 text-center">
+   357→          <Mascot pose="cheering" size="xl" bob />
+   358→          <h2 className="font-heading text-xl font-bold">
+   359→            Reviewed {reviewed} card{reviewed === 1 ? '' : 's'}
+   360→          </h2>
+   361→          <p className="text-sm text-muted-foreground">
+   362→            +{PRACTICE_XP.srs} XP{' '}
+   363→            {collected ? 'collected today' : "for today's first review set"}
+   364→          </p>
+   365→          <Button variant="outline" className="min-h-[44px]" onClick={endSession}>
+   366→            Back to overview
+   367→          </Button>
+   368→        </div>
+   369→      </TabCard>
+   370→    );
+   371→  }
+   372→
+   373→  // One card at a time
+   374→  const card = queue[pos];
+   375→  return (
+   376→    <TabCard>
+   377→      <div className="flex items-center justify-between gap-3">
+   378→        <h2 className="font-heading text-lg font-semibold">
+   379→          Card {pos + 1} of {queue.length}
+   380→        </h2>
+   381→        <Button variant="ghost" className="min-h-[44px]" onClick={endSession}>
+   382→          End session
+   383→        </Button>
+   384→      </div>
+   385→      <Progress
+   386→        value={(pos / queue.length) * 100}
+   387→        className="mt-2 h-2"
+   388→        aria-label={`Review progress: card ${pos + 1} of ${queue.length}`}
+   389→      />
+   390→
+   391→      <div className="mt-4 rounded-2xl border border-border bg-background p-5 text-center">
+   392→        <Badge variant="secondary">{card.kind === 'qa' ? 'Question' : 'Term'}</Badge>
+   393→        <p className="mt-3 font-heading text-lg font-semibold sm:text-xl">{card.front}</p>
+   394→        {flipped && (
+   395→          <div
+   396→            role="status"
+   397→            aria-live="polite"
+   398→            className="anim-pop mt-4 rounded-xl bg-success-soft p-4 text-success-soft-foreground"
+   399→          >
+   400→            <p className="text-sm font-bold">Answer</p>
+   401→            <p className="mt-1 text-sm">{card.back}</p>
+   402→          </div>
+   403→        )}
+   404→      </div>
+   405→
+   406→      <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+   407→        {!flipped ? (
+   408→          <Button className="min-h-[44px]" onClick={() => setFlipped(true)}>
+   409→            <Eye className="size-4" aria-hidden="true" /> Flip card
+   410→          </Button>
+   411→        ) : (
+   412→          <>
+   413→            <Button
+   414→              className="min-h-[44px] bg-success text-success-foreground hover:bg-success/90"
+   415→              onClick={() => review(true)}
+   416→            >
+   417→              <Check className="size-4" aria-hidden="true" /> I knew it
+   418→            </Button>
+   419→            <Button variant="outline" className="min-h-[44px]" onClick={() => review(false)}>
+   420→              See it again
+   421→            </Button>
+   422→          </>
+   423→        )}
+   424→      </div>
+   425→    </TabCard>
+   426→  );
+   427→}
+   428→
+   429→// ---------- 2. Weak topics ----------
+   430→
+   431→function WeakTopicsTab({
+   432→  state,
+   433→  onOpenChapter,
+   434→}: {
+   435→  state: LumioState;
+   436→  onOpenChapter: (chapterIndex: number) => void;
+   437→}) {
+   438→  const topics = weakTopics(state);
+   439→  return (
+   440→    <TabCard>
+   441→      <h2 className="font-heading text-lg font-semibold">Weak topics</h2>
+   442→      <p className="mt-1 text-xs text-muted-foreground">
+   443→        Built from the questions you have missed in quizzes and practice.
+   444→      </p>
+   445→
+   446→      {topics.length === 0 ? (
+   447→        <EmptyState note="No weak topics yet. Finish a chapter quiz — Lumio will collect the questions you miss here." />
+   448→      ) : (
+   449→        <ul className="mt-4 flex flex-col gap-3">
+   450→          {topics.map((t) => (
+   451→            <li
+   452→              key={t.chapterIndex}
+   453→              className="flex flex-col gap-3 rounded-xl border border-border p-4 sm:flex-row sm:items-center sm:justify-between"
+   454→            >
+   455→              <div>
+   456→                <p className="font-heading text-sm font-semibold">{t.chapterTitle}</p>
+   457→                <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+   458→                  <Badge variant="secondary">{t.subject}</Badge>
+   459→                  <span>
+   460→                    {t.misses} missed question{t.misses === 1 ? '' : 's'}
+   461→                  </span>
+   462→                </p>
+   463→              </div>
+   464→              <Button
+   465→                variant="outline"
+   466→                className="min-h-[44px]"
+   467→                onClick={() => onOpenChapter(t.chapterIndex)}
+   468→              >
+   469→                Open this chapter <ArrowRight className="size-4" aria-hidden="true" />
+   470→              </Button>
+   471→            </li>
+   472→          ))}
+   473→        </ul>
+   474→      )}
+   475→    </TabCard>
+   476→  );
+   477→}
+   478→
+   479→// ---------- 3. Timed drill ----------
+   480→
+   481→function DrillTab({
+   482→  state,
+   483→  today,
+   484→  band,
+   485→  onPracticeDone,
+   486→}: {
+   487→  state: LumioState;
+   488→  today: string;
+   489→  band: Band;
+   490→  onPracticeDone: (kind: PracticeKind) => void;
+   491→}) {
+   492→  const pool = BANDS[band].chapters.flatMap((ch, ci) =>
+   493→    ch.questions.map((q, qi) => ({ key: `${band}#${ci}#${qi}`, q, chapterTitle: ch.title })),
+   494→  );
+   495→
+   496→  const [phase, setPhase] = useState<'idle' | 'run' | 'done'>('idle');
+   497→  const [untimed, setUntimed] = useState(false);
+   498→  const [order, setOrder] = useState<number[] | null>(null);
+   499→  const [pos, setPos] = useState(0);
+   500→  const [score, setScore] = useState(0);
+   501→  const [answered, setAnswered] = useState(0);
+   502→  const [picked, setPicked] = useState<number | null>(null);
+   503→  const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+   504→  const [deadline, setDeadline] = useState<number | null>(null);
+   505→  const [announce, setAnnounce] = useState('');
+   506→
+   507→  const endedRef = useRef(false);
+   508→  const announcedRef = useRef<Set<number>>(new Set());
+   509→  const timeoutRef = useRef<number | null>(null);
+   510→  const endRoundRef = useRef<() => void>(() => {});
+   511→
+   512→  // Derived values (declared above all effects, per project rule).
+   513→  const running = phase === 'run' && order !== null;
+   514→  const cur = order !== null ? pool[order[pos] % pool.length] : null;
+   515→  const collected = practiceDoneToday(state, 'drill', today);
+   516→
+   517→  const endRound = () => {
+   518→    if (endedRef.current) return;
+   519→    endedRef.current = true;
+   520→    if (timeoutRef.current !== null) {
+   521→      window.clearTimeout(timeoutRef.current);
+   522→      timeoutRef.current = null;
+   523→    }
+   524→    setPicked(null);
+   525→    setPhase('done');
+   526→    onPracticeDone('drill');
+   527→  };
+   528→  endRoundRef.current = endRound;
+   529→
+   530→  const finishAnswer = () => {
+   531→    if (timeoutRef.current !== null) {
+   532→      window.clearTimeout(timeoutRef.current);
+   533→      timeoutRef.current = null;
+   534→    }
+   535→    if (endedRef.current) return;
+   536→    const na = answered + 1;
+   537→    if (untimed && na >= DRILL_UNTIMED_COUNT) {
+   538→      setAnswered(na);
+   539→      endRound();
+   540→      return;
+   541→    }
+   542→    setAnswered(na);
+   543→    setPicked(null);
+   544→    setPos((p) => (p + 1) % Math.max(1, order?.length ?? 1));
+   545→  };
+   546→
+   547→  const pick = (i: number) => {
+   548→    if (!running || picked !== null || !cur) return;
+   549→    const correct = i === cur.q.answer;
+   550→    setPicked(i);
+   551→    if (correct) {
+   552→      setScore((s) => s + 1);
+   553→      finishAnswer();
+   554→    } else {
+   555→      // Wrong: show the explanation briefly, then move on.
+   556→      timeoutRef.current = window.setTimeout(finishAnswer, 1600);
+   557→    }
+   558→  };
+   559→
+   560→  const startRound = () => {
+   561→    endedRef.current = false;
+   562→    announcedRef.current = new Set();
+   563→    const seed = (Date.now() % 2147483647) || 1;
+   564→    setOrder(seededShuffle(pool.map((_, i) => i), seed));
+   565→    setPos(0);
+   566→    setScore(0);
+   567→    setAnswered(0);
+   568→    setPicked(null);
+   569→    setSecondsLeft(untimed ? null : Math.ceil(DRILL_MS / 1000));
+   570→    setDeadline(untimed ? null : Date.now() + DRILL_MS);
+   571→    setAnnounce(untimed ? 'Untimed round started. Ten questions.' : 'Round started. Sixty seconds.');
+   572→    setPhase('run');
+   573→  };
+   574→
+   575→  // Countdown: ticks every 250ms but re-renders only when the second changes.
+   576→  useEffect(() => {
+   577→    if (!running || deadline === null) return;
+   578→    const t = window.setInterval(() => {
+   579→      const s = Math.ceil((deadline - Date.now()) / 1000);
+   580→      setSecondsLeft((prev) => (prev === s ? prev : s));
+   581→      if (s <= 0) {
+   582→        window.clearInterval(t);
+   583→        endRoundRef.current();
+   584→      }
+   585→    }, 250);
+   586→    return () => window.clearInterval(t);
+   587→  }, [running, deadline]);
+   588→
+   589→  // Announce time politely only at 30s and 10s — never every second.
+   590→  useEffect(() => {
+   591→    if (!running || secondsLeft === null) return;
+   592→    if ((secondsLeft === 30 || secondsLeft === 10) && !announcedRef.current.has(secondsLeft)) {
+   593→      announcedRef.current.add(secondsLeft);
+   594→      setAnnounce(`${secondsLeft} seconds left.`);
+   595→    }
+   596→  }, [running, secondsLeft]);
+   597→
+   598→  useEffect(
+   599→    () => () => {
+   600→      if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+   601→    },
+   602→    [],
+   603→  );
+   604→
+   605→  if (phase === 'idle') {
+   606→    return (
+   607→      <TabCard>
+   608→        <h2 className="font-heading text-lg font-semibold">Timed drill</h2>
+   609→        <p className="mt-1 text-sm text-muted-foreground">
+   610→          A 60-second rapid-fire round across every chapter in this band. A wrong answer shows the
+   611→          explanation for a moment, then moves on. The pool loops if you outrun it.
+   612→        </p>
+   613→        <div className="mt-4 flex flex-wrap items-center gap-3">
+   614→          <Button className="min-h-[44px]" onClick={startRound}>
+   615→            <Timer className="size-4" aria-hidden="true" /> Start drill
+   616→          </Button>
+   617→          <button
+   618→            type="button"
+   619→            aria-pressed={untimed}
+   620→            onClick={() => setUntimed(!untimed)}
+   621→            className={cn(
+   622→              'press flex min-h-[44px] items-center gap-2 rounded-full border px-4 text-sm font-medium',
+   623→              untimed ? 'border-primary bg-primary/10 text-primary' : 'border-border',
+   624→            )}
+   625→          >
+   626→            <Clock className="size-4" aria-hidden="true" />
+   627→            Untimed round {untimed ? 'on' : 'off'}
+   628→          </button>
+   629→        </div>
+   630→        <p className="mt-3 text-xs text-muted-foreground">
+   631→          Untimed rounds run 10 questions with no clock.
+   632→        </p>
+   633→      </TabCard>
+   634→    );
+   635→  }
+   636→
+   637→  if (phase === 'done') {
+   638→    return (
+   639→      <TabCard>
+   640→        <div className="flex flex-col items-center gap-3 py-4 text-center">
+   641→          <Mascot pose="excited" size="xl" bob />
+   642→          <h2 className="font-heading text-xl font-bold">{score} correct</h2>
+   643→          <p className="text-sm text-muted-foreground">
+   644→            {answered} question{answered === 1 ? '' : 's'} answered this round.
+   645→          </p>
+   646→          <p className="text-sm text-muted-foreground">
+   647→            +{PRACTICE_XP.drill} XP {collected ? 'collected today' : "for today's first round"}
+   648→          </p>
+   649→          <Button className="min-h-[44px]" onClick={() => setPhase('idle')}>
+   650→            New round
+   651→          </Button>
+   652→        </div>
+   653→      </TabCard>
+   654→    );
+   655→  }
+   656→
+   657→  // Running
+   658→  if (!cur) return null;
+   659→  return (
+   660→    <TabCard>
+   661→      <div className="flex flex-wrap items-center justify-between gap-2">
+   662→        {secondsLeft !== null ? (
+   663→          <Badge variant="secondary" className="font-mono text-base">
+   664→            {secondsLeft}s left
+   665→          </Badge>
+   666→        ) : (
+   667→          <Badge variant="secondary">Untimed</Badge>
+   668→        )}
+   669→        <p className="text-sm text-muted-foreground">
+   670→          Score {score} &middot;{' '}
+   671→          {untimed
+   672→            ? `${Math.min(answered + 1, DRILL_UNTIMED_COUNT)} of ${DRILL_UNTIMED_COUNT}`
+   673→            : `${answered} answered`}
+   674→        </p>
+   675→      </div>
+   676→      {untimed && (
+   677→        <Progress
+   678→          value={(answered / DRILL_UNTIMED_COUNT) * 100}
+   679→          className="mt-2 h-2"
+   680→          aria-label={`Drill progress: ${answered} of ${DRILL_UNTIMED_COUNT} questions answered`}
+   681→        />
+   682→      )}
+   683→      <p aria-live="polite" className="mt-1 min-h-[1rem] text-xs text-muted-foreground">
+   684→        {announce}
+   685→      </p>
+   686→
+   687→      <p className="mt-2 font-heading text-base font-semibold sm:text-lg">{cur.q.text}</p>
+   688→      <p className="mt-1 text-xs text-muted-foreground">{cur.chapterTitle}</p>
+   689→
+   690→      <div className="mt-3 flex flex-col gap-2">
+   691→        {cur.q.options.map((opt, i) => (
+   692→          <OptionButton
+   693→            key={i}
+   694→            label={opt}
+   695→            index={i}
+   696→            state={
+   697→              picked === null
+   698→                ? 'idle'
+   699→                : picked === i
+   700→                  ? i === cur.q.answer
+   701→                    ? 'correct'
+   702→                    : 'wrong'
+   703→                  : 'dim'
+   704→            }
+   705→            onClick={() => pick(i)}
+   706→          />
+   707→        ))}
+   708→      </div>
+   709→
+   710→      {picked !== null && picked !== cur.q.answer && (
+   711→        <div
+   712→          role="status"
+   713→          aria-live="polite"
+   714→          className="anim-pop mt-3 rounded-xl bg-gold-soft p-4"
+   715→          style={{ color: 'var(--gold)' }}
+   716→        >
+   717→          <p className="flex items-center gap-2 text-sm font-bold">
+   718→            <X className="size-4" aria-hidden="true" /> Not quite — the answer is &ldquo;
+   719→            {cur.q.options[cur.q.answer]}&rdquo;.
+   720→          </p>
+   721→          <p className="mt-1 text-sm">{cur.q.explanation}</p>
+   722→          <Button variant="outline" className="mt-3 min-h-[44px]" onClick={finishAnswer}>
+   723→            Continue now
+   724→          </Button>
+   725→        </div>
+   726→      )}
+   727→    </TabCard>
+   728→  );
+   729→}
+   730→
+   731→// ---------- 4. Adaptive practice ----------
+   732→
+   733→function AdaptiveTab({
+   734→  state,
+   735→  today,
+   736→  band,
+   737→  onPracticeDone,
+   738→}: {
+   739→  state: LumioState;
+   740→  today: string;
+   741→  band: Band;
+   742→  onPracticeDone: (kind: PracticeKind) => void;
+   743→}) {
+   744→  const chapters = BANDS[band].chapters;
+   745→
+   746→  const [phase, setPhase] = useState<'idle' | 'run' | 'done'>('idle');
+   747→  const [chapterIdx, setChapterIdx] = useState(0);
+   748→  const [qCounter, setQCounter] = useState(0);
+   749→  const [pos, setPos] = useState(0);
+   750→  const [score, setScore] = useState(0);
+   751→  const [picked, setPicked] = useState<number | null>(null);
+   752→  const [checked, setChecked] = useState(false);
+   753→  const paidRef = useRef(false);
+   754→
+   755→  const chapter = chapters[chapterIdx] ?? chapters[0];
+   756→  const qIdx = qCounter % Math.max(1, chapter.questions.length);
+   757→  const q = chapter.questions[qIdx];
+   758→  const collected = practiceDoneToday(state, 'adaptive', today);
+   759→
+   760→  const start = () => {
+   761→    paidRef.current = false;
+   762→    setChapterIdx(weakTopics(state)[0]?.chapterIndex ?? 0);
+   763→    setQCounter(0);
+   764→    setPos(0);
+   765→    setScore(0);
+   766→    setPicked(null);
+   767→    setChecked(false);
+   768→    setPhase('run');
+   769→  };
+   770→
+   771→  const check = () => {
+   772→    if (picked === null || checked) return;
+   773→    setChecked(true);
+   774→    if (picked === q.answer) setScore((s) => s + 1);
+   775→  };
+   776→
+   777→  const next = () => {
+   778→    const correct = picked === q.answer;
+   779→    if (correct) setChapterIdx((chapterIdx + 1) % chapters.length);
+   780→    // A miss keeps the learner in the same topic (re-teach).
+   781→    setQCounter(qCounter + 1);
+   782→    setPicked(null);
+   783→    setChecked(false);
+   784→    const np = pos + 1;
+   785→    if (np >= ADAPTIVE_COUNT) {
+   786→      setPos(np);
+   787→      setPhase('done');
+   788→      if (!paidRef.current) {
+   789→        paidRef.current = true;
+   790→        onPracticeDone('adaptive');
+   791→      }
+   792→    } else {
+   793→      setPos(np);
+   794→    }
+   795→  };
+   796→
+   797→  if (phase === 'idle') {
+   798→    return (
+   799→      <TabCard>
+   800→        <h2 className="font-heading text-lg font-semibold">Adaptive practice</h2>
+   801→        <p className="mt-1 text-sm text-muted-foreground">
+   802→          Eight questions that adjust to you: it starts at your weakest topic.
+   803→        </p>
+   804→        <p className="mt-2 text-sm text-muted-foreground">
+   805→          Correct answers move you forward; a miss keeps you in the same topic.
+   806→        </p>
+   807→        <div className="mt-4">
+   808→          <Button className="min-h-[44px]" onClick={start}>
+   809→            <TrendingUp className="size-4" aria-hidden="true" /> Start adaptive set
+   810→          </Button>
+   811→        </div>
+   812→      </TabCard>
+   813→    );
+   814→  }
+   815→
+   816→  if (phase === 'done') {
+   817→    return (
+   818→      <TabCard>
+   819→        <div className="flex flex-col items-center gap-3 py-4 text-center">
+   820→          <Mascot pose="excited" size="xl" bob />
+   821→          <h2 className="font-heading text-xl font-bold">
+   822→            {score} of {ADAPTIVE_COUNT} correct
+   823→          </h2>
+   824→          <p className="text-sm text-muted-foreground">
+   825→            +{PRACTICE_XP.adaptive} XP {collected ? 'collected today' : "for today's first set"}
+   826→          </p>
+   827→          <Button className="min-h-[44px]" onClick={() => setPhase('idle')}>
+   828→            Another round
+   829→          </Button>
+   830→        </div>
+   831→      </TabCard>
+   832→    );
+   833→  }
+   834→
+   835→  return (
+   836→    <TabCard>
+   837→      <div className="flex items-center justify-between gap-3">
+   838→        <h2 className="font-heading text-lg font-semibold">Adaptive practice</h2>
+   839→        <span className="text-sm text-muted-foreground">
+   840→          {pos + 1} / {ADAPTIVE_COUNT}
+   841→        </span>
+   842→      </div>
+   843→      <Progress
+   844→        value={(pos / ADAPTIVE_COUNT) * 100}
+   845→        className="mt-2 h-2"
+   846→        aria-label={`Adaptive progress: question ${pos + 1} of ${ADAPTIVE_COUNT}`}
+   847→      />
+   848→
+   849→      <div className="mt-4 flex flex-wrap items-center gap-2">
+   850→        <Badge variant="secondary">{chapter.subject}</Badge>
+   851→        <p className="text-sm font-medium">{chapter.title}</p>
+   852→      </div>
+   853→      <p className="mt-3 font-heading text-base font-semibold sm:text-lg">{q.text}</p>
+   854→
+   855→      <div className="mt-3 flex flex-col gap-2">
+   856→        {q.options.map((opt, i) => (
+   857→          <OptionButton
+   858→            key={i}
+   859→            label={opt}
+   860→            index={i}
+   861→            state={
+   862→              !checked
+   863→                ? picked === i
+   864→                  ? 'picked'
+   865→                  : 'idle'
+   866→                : i === q.answer
+   867→                  ? 'correct'
+   868→                  : picked === i
+   869→                    ? 'wrong'
+   870→                    : 'dim'
+   871→            }
+   872→            onClick={() => !checked && setPicked(i)}
+   873→          />
+   874→        ))}
+   875→      </div>
+   876→
+   877→      {checked && (
+   878→        <Feedback correct={picked === q.answer} answerText={q.options[q.answer]} explanation={q.explanation} />
+   879→      )}
+   880→
+   881→      <div className="mt-5 flex items-center justify-end">
+   882→        {!checked ? (
+   883→          <Button className="min-h-[44px]" onClick={check} disabled={picked === null}>
+   884→            Check answer
+   885→          </Button>
+   886→        ) : (
+   887→          <Button className="min-h-[44px]" onClick={next}>
+   888→            {pos + 1 >= ADAPTIVE_COUNT ? 'Finish' : 'Next question'}{' '}
+   889→            <ArrowRight className="size-4" aria-hidden="true" />
+   890→          </Button>
+   891→        )}
+   892→      </div>
+   893→    </TabCard>
+   894→  );
+   895→}
+   896→
+   897→// ---------- shared runner for mixed revision + legendary ----------
+   898→
+   899→function RunQuiz({
+   900→  items,
+   901→  doneTitle,
+   902→  doneXpLine,
+   903→  onDone,
+   904→  onAgain,
+   905→}: {
+   906→  items: QuizItem[];
+   907→  doneTitle: string;
+   908→  doneXpLine: string;
+   909→  onDone: () => void;
+   910→  onAgain: () => void;
+   911→}) {
+   912→  const [idx, setIdx] = useState(0);
+   913→  const [picked, setPicked] = useState<number | null>(null);
+   914→  const [checked, setChecked] = useState(false);
+   915→  const [score, setScore] = useState(0);
+   916→  const [finished, setFinished] = useState(false);
+   917→  const paidRef = useRef(false);
+   918→
+   919→  const item = items[idx];
+   920→
+   921→  const check = () => {
+   922→    if (picked === null || checked || !item) return;
+   923→    setChecked(true);
+   924→    if (picked === item.q.answer) setScore((s) => s + 1);
+   925→  };
+   926→
+   927→  const next = () => {
+   928→    if (!item) return;
+   929→    const np = idx + 1;
+   930→    setPicked(null);
+   931→    setChecked(false);
+   932→    setIdx(np);
+   933→    if (np >= items.length) {
+   934→      setFinished(true);
+   935→      if (!paidRef.current) {
+   936→        paidRef.current = true;
+   937→        onDone();
+   938→      }
+   939→    }
+   940→  };
+   941→
+   942→  if (finished) {
+   943→    return (
+   944→      <TabCard>
+   945→        <div className="flex flex-col items-center gap-3 py-4 text-center">
+   946→          <Mascot pose="cheering" size="xl" bob />
+   947→          <h2 className="font-heading text-xl font-bold">
+   948→            {score} / {items.length} correct
+   949→          </h2>
+   950→          <p className="text-sm text-muted-foreground">{doneTitle}</p>
+   951→          <p className="text-sm font-semibold text-primary">{doneXpLine}</p>
+   952→          <Button className="min-h-[44px]" onClick={onAgain}>
+   953→            Another round
+   954→          </Button>
+   955→        </div>
+   956→      </TabCard>
+   957→    );
+   958→  }
+   959→
+   960→  if (!item) return null;
+   961→  return (
+   962→    <TabCard>
+   963→      <div className="flex items-center justify-between gap-3">
+   964→        <h2 className="font-heading text-lg font-semibold">
+   965→          Question {idx + 1} of {items.length}
+   966→        </h2>
+   967→        <span className="text-sm text-muted-foreground">Score {score}</span>
+   968→      </div>
+   969→      <Progress
+   970→        value={(idx / items.length) * 100}
+   971→        className="mt-2 h-2"
+   972→        aria-label={`Quiz progress: question ${idx + 1} of ${items.length}`}
+   973→      />
+   974→
+   975→      <div className="mt-4">
+   976→        <Badge variant="secondary">{item.chapterTitle}</Badge>
+   977→      </div>
+   978→      <p className="mt-3 font-heading text-base font-semibold sm:text-lg">{item.q.text}</p>
+   979→
+   980→      <div className="mt-3 flex flex-col gap-2">
+   981→        {item.q.options.map((opt, i) => (
+   982→          <OptionButton
+   983→            key={i}
+   984→            label={opt}
+   985→            index={i}
+   986→            state={
+   987→              !checked
+   988→                ? picked === i
+   989→                  ? 'picked'
+   990→                  : 'idle'
+   991→                : i === item.q.answer
+   992→                  ? 'correct'
+   993→                  : picked === i
+   994→                    ? 'wrong'
+   995→                    : 'dim'
+   996→            }
+   997→            onClick={() => !checked && setPicked(i)}
+   998→          />
+   999→        ))}
+  1000→      </div>
+  1001→
+  1002→      {checked && (
+  1003→        <Feedback
+  1004→          correct={picked === item.q.answer}
+  1005→          answerText={item.q.options[item.q.answer]}
+  1006→          explanation={item.q.explanation}
+  1007→        />
+  1008→      )}
+  1009→
+  1010→      <div className="mt-5 flex items-center justify-end">
+  1011→        {!checked ? (
+  1012→          <Button className="min-h-[44px]" onClick={check} disabled={picked === null}>
+  1013→            Check answer
+  1014→          </Button>
+  1015→        ) : (
+  1016→          <Button className="min-h-[44px]" onClick={next}>
+  1017→            {idx + 1 >= items.length ? 'Finish' : 'Next question'}{' '}
+  1018→            <ArrowRight className="size-4" aria-hidden="true" />
+  1019→          </Button>
+  1020→        )}
+  1021→      </div>
+  1022→    </TabCard>
+  1023→  );
+  1024→}
+  1025→
+  1026→// ---------- 5. Mixed revision ----------
+  1027→
+  1028→function RevisionTab({
+  1029→  state,
+  1030→  today,
+  1031→  band,
+  1032→  onPracticeDone,
+  1033→}: {
+  1034→  state: LumioState;
+  1035→  today: string;
+  1036→  band: Band;
+  1037→  onPracticeDone: (kind: PracticeKind) => void;
+  1038→}) {
+  1039→  const chapters = BANDS[band].chapters;
+  1040→  const completed = chapters
+  1041→    .map((_, i) => i)
+  1042→    .filter((i) => (state.res[chapterId(band, i)]?.best ?? 0) >= 1);
+  1043→  const locked = completed.length < 2;
+  1044→  const collected = practiceDoneToday(state, 'revision', today);
+  1045→
+  1046→  const [round, setRound] = useState(0);
+  1047→
+  1048→  const items: QuizItem[] = [];
+  1049→  if (!locked) {
+  1050→    const perCh = Math.ceil(REVISION_COUNT / completed.length);
+  1051→    const queues = completed.map((ci, k) => {
+  1052→      const qs = chapters[ci].questions;
+  1053→      const expanded: Array<{ q: Question; qi: number }> = [];
+  1054→      for (let n = 0; expanded.length < perCh; n++) {
+  1055→        const qi = n % qs.length;
+  1056→        expanded.push({ q: qs[qi], qi });
+  1057→      }
+  1058→      return seededShuffle(expanded, (round + 1) * 97 + k * 13 + 7).map(({ q, qi }) => ({
+  1059→        key: `${band}#${ci}#${qi}`,
+  1060→        q,
+  1061→        chapterTitle: chapters[ci].title,
+  1062→      }));
+  1063→    });
+  1064→    for (let r = 0; items.length < REVISION_COUNT; r++) {
+  1065→      let any = false;
+  1066→      for (const queue of queues) {
+  1067→        if (items.length >= REVISION_COUNT) break;
+  1068→        const it = queue[r];
+  1069→        if (it) {
+  1070→          items.push(it);
+  1071→          any = true;
+  1072→        }
+  1073→      }
+  1074→      if (!any) break;
+  1075→    }
+  1076→  }
+  1077→
+  1078→  if (locked) {
+  1079→    return (
+  1080→      <TabCard>
+  1081→        <h2 className="font-heading text-lg font-semibold">Mixed revision</h2>
+  1082→        <EmptyState note="Complete at least two chapter quizzes first — revision mixes what you have already learned." />
+  1083→        <p className="text-center text-sm text-muted-foreground">
+  1084→          Chapters completed so far: {completed.length}
+  1085→        </p>
+  1086→      </TabCard>
+  1087→    );
+  1088→  }
+  1089→
+  1090→  return (
+  1091→    <div className="flex flex-col gap-3">
+  1092→      <TabCard>
+  1093→        <h2 className="font-heading text-lg font-semibold">Mixed revision</h2>
+  1094→        <p className="mt-1 text-sm text-muted-foreground">
+  1095→          Ten questions interleaved across your {completed.length} completed chapter
+  1096→          {completed.length === 1 ? '' : 's'} — revising in mixed order is harder and it sticks
+  1097→          better.
+  1098→        </p>
+  1099→      </TabCard>
+  1100→      <RunQuiz
+  1101→        key={round}
+  1102→        items={items}
+  1103→        doneTitle="Mixed revision complete."
+  1104→        doneXpLine={`+${PRACTICE_XP.revision} XP ${
+  1105→          collected ? 'collected today' : "for today's first revision"
+  1106→        }`}
+  1107→        onDone={() => onPracticeDone('revision')}
+  1108→        onAgain={() => setRound((r) => r + 1)}
+  1109→      />
+  1110→    </div>
+  1111→  );
+  1112→}
+  1113→
+  1114→// ---------- 6. Legendary ----------
+  1115→
+  1116→function LegendaryTab({
+  1117→  state,
+  1118→  band,
+  1119→  onLegendary,
+  1120→}: {
+  1121→  state: LumioState;
+  1122→  band: Band;
+  1123→  onLegendary: () => void;
+  1124→}) {
+  1125→  const chapters = BANDS[band].chapters;
+  1126→  const mastered = masteredCount(state);
+  1127→  const locked = mastered < 2;
+  1128→  const doneEver = legendaryDone(state);
+  1129→
+  1130→  const [round, setRound] = useState(0);
+  1131→
+  1132→  // Hard mix: the last question of each chapter, padded with earlier ones if needed.
+  1133→  const items: QuizItem[] = [];
+  1134→  if (!locked) {
+  1135→    for (let back = 0; items.length < LEGENDARY_COUNT && back < 64; back++) {
+  1136→      for (let ci = 0; ci < chapters.length && items.length < LEGENDARY_COUNT; ci++) {
+  1137→        const qs = chapters[ci].questions;
+  1138→        const qi = qs.length - 1 - back;
+  1139→        if (qi >= 0) {
+  1140→          items.push({ key: `${band}#${ci}#${qi}`, q: qs[qi], chapterTitle: chapters[ci].title });
+  1141→        }
+  1142→      }
+  1143→    }
+  1144→  }
+  1145→
+  1146→  if (locked) {
+  1147→    return (
+  1148→      <TabCard>
+  1149→        <h2 className="font-heading text-lg font-semibold">Legendary</h2>
+  1150→        <div className="flex flex-col items-center gap-3 py-6 text-center">
+  1151→          <Trophy className="size-10 text-muted-foreground" aria-hidden="true" />
+  1152→          <p className="max-w-md text-sm text-muted-foreground">
+  1153→            Master 2 chapters to unlock the legendary challenge (you have {mastered}).
+  1154→          </p>
+  1155→        </div>
+  1156→      </TabCard>
+  1157→    );
+  1158→  }
+  1159→
+  1160→  return (
+  1161→    <div className="flex flex-col gap-3">
+  1162→      <TabCard>
+  1163→        <div className="flex items-center gap-3">
+  1164→          <Trophy className="size-6 text-primary" aria-hidden="true" />
+  1165→          <div>
+  1166→            <h2 className="font-heading text-lg font-semibold">Legendary</h2>
+  1167→            <p className="text-sm text-muted-foreground">
+  1168→              Ten hard questions drawn from across all {chapters.length} chapters in this band.
+  1169→            </p>
+  1170→          </div>
+  1171→        </div>
+  1172→      </TabCard>
+  1173→      <RunQuiz
+  1174→        key={round}
+  1175→        items={items}
+  1176→        doneTitle="Legendary challenge complete."
+  1177→        doneXpLine={
+  1178→          doneEver
+  1179→            ? `+${LEGENDARY_XP} XP, once ever — collected`
+  1180→            : `+${LEGENDARY_XP} XP, once ever`
+  1181→        }
+  1182→        onDone={onLegendary}
+  1183→        onAgain={() => setRound((r) => r + 1)}
+  1184→      />
+  1185→    </div>
+  1186→  );
+  1187→}
+  1188→
+  1189→// ---------- 7. Error lab ----------
+  1190→
+  1191→function ErrorLabTab({
+  1192→  state,
+  1193→  today,
+  1194→  band,
+  1195→  onPracticeDone,
+  1196→}: {
+  1197→  state: LumioState;
+  1198→  today: string;
+  1199→  band: Band;
+  1200→  onPracticeDone: (kind: PracticeKind) => void;
+  1201→}) {
+  1202→  const missed = resolveMissed(band, state.wrong);
+  1203→  const collected = practiceDoneToday(state, 'errorlab', today);
+  1204→
+  1205→  const [pos, setPos] = useState(0);
+  1206→  const [done, setDone] = useState(false);
+  1207→  const paidRef = useRef(false);
+  1208→
+  1209→  const advance = () => {
+  1210→    if (pos === 0 && !paidRef.current) {
+  1211→      paidRef.current = true;
+  1212→      onPracticeDone('errorlab');
+  1213→    }
+  1214→    if (pos + 1 >= missed.length) {
+  1215→      setDone(true);
+  1216→    } else {
+  1217→      setPos(pos + 1);
+  1218→    }
+  1219→  };
+  1220→
+  1221→  if (missed.length === 0) {
+  1222→    return (
+  1223→      <TabCard>
+  1224→        <h2 className="font-heading text-lg font-semibold">Error lab</h2>
+  1225→        <EmptyState note="No misses recorded yet — the Error Lab fills up as questions come back wrong in quizzes and practice." />
+  1226→      </TabCard>
+  1227→    );
+  1228→  }
+  1229→
+  1230→  if (done) {
+  1231→    return (
+  1232→      <TabCard>
+  1233→        <div className="flex flex-col items-center gap-3 py-4 text-center">
+  1234→          <Mascot pose="excited" size="xl" bob />
+  1235→          <h2 className="font-heading text-xl font-bold">
+  1236→            Reviewed {missed.length} mistake{missed.length === 1 ? '' : 's'}
+  1237→          </h2>
+  1238→          <p className="text-sm text-muted-foreground">
+  1239→            +{PRACTICE_XP.errorlab} XP {collected ? 'collected today' : "for today's first lab"}
+  1240→          </p>
+  1241→          <Button
+  1242→            variant="outline"
+  1243→            className="min-h-[44px]"
+  1244→            onClick={() => {
+  1245→              setPos(0);
+  1246→              setDone(false);
+  1247→              paidRef.current = true;
+  1248→            }}
+  1249→          >
+  1250→            Review them again
+  1251→          </Button>
+  1252→        </div>
+  1253→      </TabCard>
+  1254→    );
+  1255→  }
+  1256→
+  1257→  const row = missed[pos];
+  1258→  const tagged = state.mistakes[row.id]?.tag;
+  1259→  const tagLabel = MISTAKE_TAGS.find((t) => t.tag === tagged)?.label;
+  1260→  const steps = workedSteps(row.q, row.chapterTitle, row.subject);
+  1261→  const last = pos + 1 >= missed.length;
+  1262→
+  1263→  return (
+  1264→    <TabCard>
+  1265→      <div className="flex items-center justify-between gap-3">
+  1266→        <h2 className="font-heading text-lg font-semibold">
+  1267→          Mistake {pos + 1} of {missed.length}
+  1268→        </h2>
+  1269→        <Badge variant="secondary">{row.subject}</Badge>
+  1270→      </div>
+  1271→
+  1272→      <p className="mt-3 font-heading text-base font-semibold sm:text-lg">{row.q.text}</p>
+  1273→      <p className="mt-1 text-xs text-muted-foreground">
+  1274→        You missed this in &ldquo;{row.chapterTitle}&rdquo;
+  1275→        {tagLabel ? ` — tagged as ${tagLabel.toLowerCase()}` : ''}.
+  1276→      </p>
+  1277→
+  1278→      <div className="mt-4 rounded-2xl border border-border bg-background p-4">
+  1279→        <p className="text-sm font-semibold">Worked solution</p>
+  1280→        <ol className="mt-3 flex flex-col gap-3">
+  1281→          {steps.map((step, i) => (
+  1282→            <li key={step.title} className="flex items-start gap-3">
+  1283→              <span
+  1284→                className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary"
+  1285→                aria-hidden="true"
+  1286→              >
+  1287→                {i + 1}
+  1288→              </span>
+  1289→              <div>
+  1290→                <p className="text-sm font-semibold">{step.title}</p>
+  1291→                <p className="mt-0.5 text-sm text-muted-foreground">{step.body}</p>
+  1292→              </div>
+  1293→            </li>
+  1294→          ))}
+  1295→        </ol>
+  1296→      </div>
+  1297→
+  1298→      <div className="mt-5 flex items-center justify-end">
+  1299→        <Button className="min-h-[44px]" onClick={advance}>
+  1300→          {last ? 'Finish review' : 'Next mistake'} <ArrowRight className="size-4" aria-hidden="true" />
+  1301→        </Button>
+  1302→      </div>
+  1303→    </TabCard>
+  1304→  );
+  1305→}
+  1306→
+  1307→// ---------- 8. Mistake notebook ----------
+  1308→
+  1309→function NotebookTab({
+  1310→  state,
+  1311→  band,
+  1312→  onTagMistake,
+  1313→}: {
+  1314→  state: LumioState;
+  1315→  band: Band;
+  1316→  onTagMistake: (questionId: string, tag: MistakeTag | null) => void;
+  1317→}) {
+  1318→  const rows = resolveMissed(band, state.wrong);
+  1319→
+  1320→  return (
+  1321→    <TabCard>
+  1322→      <h2 className="font-heading text-lg font-semibold">Mistake notebook</h2>
+  1323→      <p className="mt-1 text-xs text-muted-foreground">
+  1324→        Every question you have missed. Tag each one so Lumio knows what kind of revision it needs —
+  1325→        a concept gap gets re-teaching, a careless slip just a gentle nudge.
+  1326→      </p>
+  1327→
+  1328→      {rows.length === 0 ? (
+  1329→        <EmptyState note="No mistakes recorded yet — the notebook fills up with questions you miss in quizzes and practice." />
+  1330→      ) : (
+  1331→        <ul className="mt-4 flex max-h-96 flex-col gap-3 overflow-y-auto pr-1">
+  1332→          {rows.map((row) => {
+  1333→            const active = state.mistakes[row.id]?.tag ?? null;
+  1334→            return (
+  1335→              <li key={row.id} className="rounded-xl border border-border p-4">
+  1336→                <p className="text-sm font-medium">{row.q.text}</p>
+  1337→                <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+  1338→                  <Badge variant="secondary">{row.chapterTitle}</Badge>
+  1339→                  <span>{row.subject}</span>
+  1340→                </p>
+  1341→                <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label="Tag this mistake">
+  1342→                  {MISTAKE_TAGS.map(({ tag, label }) => {
+  1343→                    const isActive = active === tag;
+  1344→                    return (
+  1345→                      <button
+  1346→                        key={tag}
+  1347→                        type="button"
+  1348→                        aria-pressed={isActive}
+  1349→                        onClick={() => onTagMistake(row.id, isActive ? null : tag)}
+  1350→                        className={cn(
+  1351→                          'press min-h-[44px] rounded-full border px-4 text-sm font-medium',
+  1352→                          isActive
+  1353→                            ? 'border-primary bg-primary text-primary-foreground'
+  1354→                            : 'border-border hover:border-primary/40',
+  1355→                        )}
+  1356→                      >
+  1357→                        {label}
+  1358→                      </button>
+  1359→                    );
+  1360→                  })}
+  1361→                </div>
+  1362→              </li>
+  1363→            );
+  1364→          })}
+  1365→        </ul>
+  1366→      )}
+  1367→    </TabCard>
+  1368→  );
+  1369→}
+  1370→
+  1371→// ---------- hub ----------
+  1372→
+  1373→export function PracticeHub({
+  1374→  state,
+  1375→  today,
+  1376→  onCardReview,
+  1377→  onPracticeDone,
+  1378→  onLegendary,
+  1379→  onTagMistake,
+  1380→  onOpenChapter,
+  1381→  mocks,
+  1382→}: PracticeHubProps) {
+  1383→  const band = state.profile?.band ?? 'sec';
+  1384→  const tr = tFor(state.profile?.lang);
+  1385→  const [tab, setTab] = useState<TabId>('flashcards');
+  1386→
+  1387→  return (
+  1388→    <section aria-labelledby="practice-heading" className="mx-auto flex w-full max-w-3xl flex-col gap-4">
+  1389→      <div className="rounded-2xl border border-border bg-card p-4 sm:p-6">
+  1390→        <div className="flex items-start gap-4">
+  1391→          <div className="shrink-0">
+  1392→            <Mascot pose="curious" size="md" bob />
+  1393→          </div>
+  1394→          <div>
+  1395→            <h1 id="practice-heading" className="font-heading text-2xl font-bold">
+  1396→              {tr('games.practice')}
+  1397→            </h1>
+  1398→            <p className="mt-1 text-sm text-muted-foreground">
+  1399→              {tr('games.practiceNote')}
+  1400→            </p>
+  1401→          </div>
+  1402→        </div>
+  1403→      </div>
+  1404→
+  1405→      <div role="tablist" aria-label="Practice tools" className="flex flex-wrap gap-2">
+  1406→        {TABS.map((t) => (
+  1407→          <button
+  1408→            key={t.id}
+  1409→            type="button"
+  1410→            role="tab"
+  1411→            id={`practice-tab-${t.id}`}
+  1412→            aria-selected={tab === t.id}
+  1413→            aria-controls={`practice-panel-${t.id}`}
+  1414→            onClick={() => setTab(t.id)}
+  1415→            className={cn(
+  1416→              'press flex min-h-[44px] items-center gap-2 rounded-full border px-4 text-sm font-semibold',
+  1417→              tab === t.id
+  1418→                ? 'border-primary bg-primary text-primary-foreground'
+  1419→                : 'border-border bg-card hover:border-primary/40',
+  1420→            )}
+  1421→          >
+  1422→            <t.icon className="size-4" aria-hidden="true" />
+  1423→            {t.label}
+  1424→          </button>
+  1425→        ))}
+  1426→      </div>
+  1427→
+  1428→      <div role="tabpanel" id={`practice-panel-${tab}`} aria-labelledby={`practice-tab-${tab}`}>
+  1429→        {tab === 'flashcards' && (
+  1430→          <FlashcardsTab
+  1431→            state={state}
+  1432→            today={today}
+  1433→            band={band}
+  1434→            onCardReview={onCardReview}
+  1435→            onPracticeDone={onPracticeDone}
+  1436→          />
+  1437→        )}
+  1438→        {tab === 'weak' && <WeakTopicsTab state={state} onOpenChapter={onOpenChapter} />}
+  1439→        {tab === 'drill' && (
+  1440→          <DrillTab state={state} today={today} band={band} onPracticeDone={onPracticeDone} />
+  1441→        )}
+  1442→        {tab === 'adaptive' && (
+  1443→          <AdaptiveTab state={state} today={today} band={band} onPracticeDone={onPracticeDone} />
+  1444→        )}
+  1445→        {tab === 'revision' && (
+  1446→          <RevisionTab state={state} today={today} band={band} onPracticeDone={onPracticeDone} />
+  1447→        )}
+  1448→        {tab === 'legendary' && (
+  1449→          <LegendaryTab state={state} band={band} onLegendary={onLegendary} />
+  1450→        )}
+  1451→        {tab === 'errorlab' && (
+  1452→          <ErrorLabTab state={state} today={today} band={band} onPracticeDone={onPracticeDone} />
+  1453→        )}
+  1454→        {tab === 'notebook' && (
+  1455→          <NotebookTab state={state} band={band} onTagMistake={onTagMistake} />
+  1456→        )}
+  1457→        {tab === 'mocks' && mocks}
+  1458→      </div>
+  1459→    </section>
+  1460→  );
+  1461→}
+  1462→

@@ -1,0 +1,663 @@
+     1→'use client';
+     2→
+     3→import { useRef, useState } from 'react';
+     4→import { FileText, NotebookPen, Printer, Sparkles, Trash2, Upload, Youtube } from 'lucide-react';
+     5→import { Button } from '@/components/ui/button';
+     6→import { Checkbox } from '@/components/ui/checkbox';
+     7→import { Input } from '@/components/ui/input';
+     8→import { Label } from '@/components/ui/label';
+     9→import { Skeleton } from '@/components/ui/skeleton';
+    10→import { cn } from '@/lib/utils';
+    11→import {
+    12→  dayKey, isNoteExtension, MAX_NOTES, MAX_VIDEOS, NOTE_MAX_BYTES,
+    13→  sanitizeFileName, sanitizeNoteText, youtubeEmbedUrl, youtubeIdFromUrl,
+    14→} from '@/lib/lumio/domain';
+    15→import { BANDS, type Band } from '@/lib/lumio/content';
+    16→import { tFor, t } from '@/lib/lumio/i18n';
+    17→import { aiApi, type NotesAiResult } from '@/lib/lumio/aiClient';
+    18→import type { LumioState, LearnerNote } from '@/lib/lumio/types';
+    19→import { AiLabel, AiMarkdown } from '../ai/AiMarkdown';
+    20→
+    21→/**
+    22→ * Study tools (chunk 4B, master prompt 7.14): printable worksheet generator,
+    23→ * plain-text note upload and validated YouTube study videos.
+    24→ * All strings come from the i18n dictionary; limits are honest and enforced.
+    25→ */
+    26→
+    27→type CountChoice = 'all' | 2 | 1;
+    28→
+    29→const COUNT_CHOICES: Array<{ value: CountChoice; label: string }> = [
+    30→  { value: 'all', label: 'All' },
+    31→  { value: 2, label: '2' },
+    32→  { value: 1, label: '1' },
+    33→];
+    34→
+    35→export function StudyTools({
+    36→  state, now, onAddNote, onRemoveNote, onAddVideo, onRemoveVideo,
+    37→  aiAvailable, signedIn, aiEnabled, demo, onSaveAi,
+    38→}: {
+    39→  state: LumioState;
+    40→  now: Date;
+    41→  onAddNote: (note: { id: string; name: string; text: string; added: string }) => void;
+    42→  onRemoveNote: (noteId: string) => void;
+    43→  onAddVideo: (video: { id: string; videoId: string; sourceUrl: string; added: string }) => void;
+    44→  onRemoveVideo: (videoId: string) => void;
+    45→  /** chunk 5B: Notes AI gating + save (practice-only, never XP) */
+    46→  aiAvailable?: boolean;
+    47→  signedIn?: boolean;
+    48→  aiEnabled?: boolean;
+    49→  demo?: boolean;
+    50→  onSaveAi?: (args: {
+    51→    id: string;
+    52→    kind: 'notes';
+    53→    date: string;
+    54→    payload: NotesAiResult;
+    55→    label: string;
+    56→  }) => void;
+    57→}) {
+    58→  const tr = tFor(state.profile?.lang);
+    59→  const tz = state.profile?.tz ?? 'Asia/Kolkata';
+    60→  const band: Band = state.profile?.band ?? 'sec';
+    61→  const bandDef = BANDS[band];
+    62→  const chapters = bandDef.chapters;
+    63→
+    64→  // worksheet state
+    65→  const [chapterIdx, setChapterIdx] = useState(0);
+    66→  const [count, setCount] = useState<CountChoice>('all');
+    67→  const chapter = chapters[chapterIdx] ?? chapters[0];
+    68→  const questions =
+    69→    chapter && count !== 'all' ? chapter.questions.slice(0, count) : chapter?.questions ?? [];
+    70→
+    71→  // note state
+    72→  const fileRef = useRef<HTMLInputElement>(null);
+    73→  const [noteStatus, setNoteStatus] = useState<string | null>(null);
+    74→  const [openNoteId, setOpenNoteId] = useState<string | null>(null);
+    75→
+    76→  // video state
+    77→  const [videoUrl, setVideoUrl] = useState('');
+    78→  const [videoStatus, setVideoStatus] = useState<string | null>(null);
+    79→  const [videoBad, setVideoBad] = useState(false);
+    80→
+    81→  function handleNoteFile(e: React.ChangeEvent<HTMLInputElement>) {
+    82→    const file = e.target.files?.[0];
+    83→    e.target.value = ''; // allow re-selecting the same file
+    84→    setNoteStatus(null);
+    85→    if (!file) return;
+    86→    if (!isNoteExtension(file.name)) {
+    87→      setNoteStatus(tr('tools.noteBadType'));
+    88→      return;
+    89→    }
+    90→    if (file.size > NOTE_MAX_BYTES) {
+    91→      setNoteStatus(tr('tools.noteTooBig'));
+    92→      return;
+    93→    }
+    94→    if (state.notes.length >= MAX_NOTES) {
+    95→      setNoteStatus('You have 50 notes stored — remove one first.');
+    96→      return;
+    97→    }
+    98→    void file.text().then((raw) => {
+    99→      onAddNote({
+   100→        id: crypto.randomUUID(),
+   101→        name: sanitizeFileName(file.name),
+   102→        text: sanitizeNoteText(raw),
+   103→        added: dayKey(now, tz),
+   104→      });
+   105→      setNoteStatus(tr('tools.noteSaved'));
+   106→    });
+   107→  }
+   108→
+   109→  function handleAddVideo() {
+   110→    setVideoStatus(null);
+   111→    setVideoBad(false);
+   112→    const id = youtubeIdFromUrl(videoUrl);
+   113→    if (!id) {
+   114→      setVideoStatus(tr('tools.videoBad'));
+   115→      setVideoBad(true);
+   116→      return;
+   117→    }
+   118→    if (state.videos.some((v) => v.videoId === id)) {
+   119→      setVideoStatus('Already saved.');
+   120→      return;
+   121→    }
+   122→    if (state.videos.length >= MAX_VIDEOS) {
+   123→      setVideoStatus('You have 20 videos stored — remove one first.');
+   124→      return;
+   125→    }
+   126→    onAddVideo({
+   127→      id: crypto.randomUUID(),
+   128→      videoId: id,
+   129→      sourceUrl: videoUrl.trim(),
+   130→      added: dayKey(now, tz),
+   131→    });
+   132→    setVideoUrl('');
+   133→    setVideoStatus(tr('tools.videoAdded'));
+   134→  }
+   135→
+   136→  return (
+   137→    <div className="flex flex-col gap-4">
+   138→      {/* Header */}
+   139→      <section aria-labelledby="tools-header" className="rounded-2xl border border-border bg-card p-5">
+   140→        <h1 id="tools-header" className="flex items-center gap-2 font-heading text-2xl font-bold">
+   141→          <NotebookPen className="size-6 text-primary" aria-hidden="true" /> {tr('tools.title')}
+   142→        </h1>
+   143→        <p className="mt-1 text-sm text-muted-foreground">{tr('tools.subtitle')}</p>
+   144→      </section>
+   145→
+   146→      {/* Worksheet generator */}
+   147→      <section aria-labelledby="tools-worksheet" className="rounded-2xl border border-border bg-card p-5">
+   148→        <h2 id="tools-worksheet" className="flex items-center gap-2 font-heading text-lg font-semibold">
+   149→          <FileText className="size-5 text-primary" aria-hidden="true" /> {tr('tools.worksheet')}
+   150→        </h2>
+   151→        <p className="mt-1 text-sm text-muted-foreground">{tr('tools.worksheetNote')}</p>
+   152→
+   153→        <fieldset className="mt-4">
+   154→          <legend className="text-sm font-medium">{tr('tools.pickChapter')}</legend>
+   155→          <div className="mt-2 flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
+   156→            {chapters.map((ch, i) => (
+   157→              <Button
+   158→                key={ch.title}
+   159→                size="sm"
+   160→                variant={i === chapterIdx ? 'default' : 'outline'}
+   161→                className="min-h-[44px] max-w-full"
+   162→                onClick={() => setChapterIdx(i)}
+   163→                aria-pressed={i === chapterIdx}
+   164→                aria-label={`${ch.subject}: ${ch.title}`}
+   165→              >
+   166→                <span className="truncate">{ch.title}</span>
+   167→              </Button>
+   168→            ))}
+   169→          </div>
+   170→        </fieldset>
+   171→
+   172→        <fieldset className="mt-3">
+   173→          <legend className="text-sm font-medium">{tr('tools.questionCount')}</legend>
+   174→          <div className="mt-2 flex gap-1.5" role="group" aria-label={tr('tools.questionCount')}>
+   175→            {COUNT_CHOICES.map((c) => (
+   176→              <Button
+   177→                key={String(c.value)}
+   178→                size="sm"
+   179→                variant={count === c.value ? 'default' : 'outline'}
+   180→                className="min-h-[44px] min-w-[44px]"
+   181→                onClick={() => setCount(c.value)}
+   182→                aria-pressed={count === c.value}
+   183→              >
+   184→                {c.label}
+   185→              </Button>
+   186→            ))}
+   187→          </div>
+   188→        </fieldset>
+   189→
+   190→        {chapter && questions.length > 0 && (
+   191→          <div
+   192→            className="print-area mt-4 rounded-xl border border-border bg-background p-6 font-serif text-foreground shadow-sm"
+   193→            aria-label={tr('tools.worksheetHeader')}
+   194→          >
+   195→            <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-foreground/40 pb-2">
+   196→              <h3 className="font-heading text-xl font-bold">{tr('tools.worksheetHeader')}</h3>
+   197→              <p className="text-sm text-muted-foreground">{chapter.subject} · {bandDef.name}</p>
+   198→            </div>
+   199→            <div className="mt-3 flex flex-wrap justify-between gap-6 text-sm">
+   200→              <p>{tr('tools.nameLine')} <span className="inline-block w-48 border-b border-foreground/60">&nbsp;</span></p>
+   201→              <p>{tr('tools.dateLine')} <span className="inline-block w-32 border-b border-foreground/60">&nbsp;</span></p>
+   202→            </div>
+   203→            <ol className="mt-5 flex flex-col gap-5">
+   204→              {questions.map((q, i) => (
+   205→                <li key={i} className="text-[15px] leading-relaxed">
+   206→                  <p><span className="font-semibold">{i + 1}.</span> {q.text}</p>
+   207→                  <div className="mt-2 ml-6 flex flex-col gap-6" aria-hidden="true">
+   208→                    <div className="h-6 border-b border-foreground/50" />
+   209→                    <div className="h-6 border-b border-foreground/50" />
+   210→                    <div className="h-6 border-b border-foreground/50" />
+   211→                  </div>
+   212→                </li>
+   213→              ))}
+   214→            </ol>
+   215→            <div className="break-before pt-4" style={{ breakBefore: 'page' }}>
+   216→              <h3 className="border-b border-foreground/40 pb-2 font-heading text-lg font-bold">
+   217→                {tr('tools.answerKey')}
+   218→              </h3>
+   219→              <ol className="mt-3 flex flex-col gap-1 text-sm">
+   220→                {questions.map((q, i) => (
+   221→                  <li key={i}>
+   222→                    <span className="font-semibold">{i + 1}.</span> {q.options[q.answer]}
+   223→                  </li>
+   224→                ))}
+   225→              </ol>
+   226→            </div>
+   227→          </div>
+   228→        )}
+   229→
+   230→        <div className="mt-4 flex flex-col gap-2">
+   231→          <Button
+   232→            className="min-h-[44px] self-start"
+   233→            onClick={() => window.print()}
+   234→            disabled={questions.length === 0}
+   235→            aria-label={tr('tools.print')}
+   236→          >
+   237→            <Printer className="size-4" aria-hidden="true" /> {tr('tools.print')}
+   238→          </Button>
+   239→          <p className="text-xs text-muted-foreground">{tr('tools.printHint')}</p>
+   240→          <p className="text-xs text-muted-foreground">{tr('tools.answersNote')}</p>
+   241→        </div>
+   242→      </section>
+   243→
+   244→      {/* My notes */}
+   245→      <section aria-labelledby="tools-notes" className="rounded-2xl border border-border bg-card p-5">
+   246→        <h2 id="tools-notes" className="flex items-center gap-2 font-heading text-lg font-semibold">
+   247→          <NotebookPen className="size-5 text-primary" aria-hidden="true" /> {tr('tools.notes')}
+   248→        </h2>
+   249→        <p className="mt-1 text-sm text-muted-foreground">{tr('tools.notesNote')}</p>
+   250→
+   251→        <input
+   252→          ref={fileRef}
+   253→          type="file"
+   254→          accept=".txt,.md,text/plain,text/markdown"
+   255→          className="hidden"
+   256→          onChange={handleNoteFile}
+   257→          aria-hidden="true"
+   258→          tabIndex={-1}
+   259→        />
+   260→        <Button
+   261→          className="mt-3 min-h-[44px]"
+   262→          onClick={() => fileRef.current?.click()}
+   263→          aria-label={tr('tools.uploadNote')}
+   264→        >
+   265→          <Upload className="size-4" aria-hidden="true" /> {tr('tools.uploadNote')}
+   266→        </Button>
+   267→
+   268→        {noteStatus && (
+   269→          <p role="status" className="mt-3 rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">
+   270→            {noteStatus}
+   271→          </p>
+   272→        )}
+   273→
+   274→        {state.notes.length === 0 ? (
+   275→          <p className="mt-3 text-sm text-muted-foreground">{tr('tools.noNotes')}</p>
+   276→        ) : (
+   277→          <ul className="mt-3 flex max-h-96 flex-col gap-2 overflow-y-auto" aria-label={tr('tools.notes')}>
+   278→            {state.notes.map((n) => {
+   279→              const open = openNoteId === n.id;
+   280→              const saved = Object.keys(state.aiContent).some((k) => k.startsWith(`notes#${n.id}#`));
+   281→              return (
+   282→                <li key={n.id} className="rounded-xl border border-border p-3">
+   283→                  <div className="flex min-h-[44px] items-center gap-2">
+   284→                    <button
+   285→                      type="button"
+   286→                      onClick={() => setOpenNoteId(open ? null : n.id)}
+   287→                      aria-expanded={open}
+   288→                      className="min-h-[44px] min-w-0 flex-1 truncate text-left font-medium underline-offset-2 hover:underline"
+   289→                      aria-label={`${n.name}, ${n.text.length} characters`}
+   290→                    >
+   291→                      {n.name}
+   292→                    </button>
+   293→                    {saved && (
+   294→                      <span className="shrink-0 rounded-full bg-success-soft px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-success-soft-foreground">
+   295→                        {tr('ai.savedChip')}
+   296→                      </span>
+   297→                    )}
+   298→                    <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
+   299→                      {n.added} · {n.text.length}
+   300→                    </span>
+   301→                    <Button
+   302→                      size="sm"
+   303→                      variant="ghost"
+   304→                      className="min-h-[44px]"
+   305→                      onClick={() => onRemoveNote(n.id)}
+   306→                      aria-label={`Remove ${n.name}`}
+   307→                    >
+   308→                      <Trash2 className="size-4" aria-hidden="true" />
+   309→                    </Button>
+   310→                  </div>
+   311→                  {open && (
+   312→                    <pre className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-lg bg-muted/60 p-3 text-sm">
+   313→                      {n.text}
+   314→                    </pre>
+   315→                  )}
+   316→                  <NoteAiBlock
+   317→                    note={n}
+   318→                    band={band}
+   319→                    lang={state.profile?.lang ?? 'en'}
+   320→                    date={dayKey(now, tz)}
+   321→                    saved={saved}
+   322→                    aiAvailable={aiAvailable !== false}
+   323→                    signedIn={signedIn !== false}
+   324→                    aiEnabled={aiEnabled !== false}
+   325→                    demo={demo}
+   326→                    onSaveAi={onSaveAi}
+   327→                  />
+   328→                </li>
+   329→              );
+   330→            })}
+   331→          </ul>
+   332→        )}
+   333→      </section>
+   334→
+   335→      {/* Study video */}
+   336→      <section aria-labelledby="tools-video" className="rounded-2xl border border-border bg-card p-5">
+   337→        <h2 id="tools-video" className="flex items-center gap-2 font-heading text-lg font-semibold">
+   338→          <Youtube className="size-5 text-primary" aria-hidden="true" /> {tr('tools.video')}
+   339→        </h2>
+   340→        <p className="mt-1 text-sm text-muted-foreground">{tr('tools.videoNote')}</p>
+   341→
+   342→        <div className="mt-3 flex flex-col gap-2">
+   343→          <Label htmlFor="tools-video-url">{tr('tools.videoUrl')}</Label>
+   344→          <div className="flex flex-col gap-2 sm:flex-row">
+   345→            <Input
+   346→              id="tools-video-url"
+   347→              type="url"
+   348→              inputMode="url"
+   349→              placeholder="https://www.youtube.com/watch?v=..."
+   350→              value={videoUrl}
+   351→              onChange={(e) => setVideoUrl(e.target.value)}
+   352→              className={cn('min-h-[44px]', videoBad && 'border-destructive')}
+   353→              aria-invalid={videoBad}
+   354→            />
+   355→            <Button className="min-h-[44px]" onClick={handleAddVideo} aria-label={tr('tools.addVideo')}>
+   356→              {tr('tools.addVideo')}
+   357→            </Button>
+   358→          </div>
+   359→        </div>
+   360→
+   361→        {videoStatus && (
+   362→          <p
+   363→            role={videoBad ? 'alert' : 'status'}
+   364→            className={cn(
+   365→              'mt-3 rounded-lg px-3 py-2 text-sm',
+   366→              videoBad ? 'bg-destructive/10 text-destructive' : 'bg-muted text-muted-foreground'
+   367→            )}
+   368→          >
+   369→            {videoStatus}
+   370→          </p>
+   371→        )}
+   372→
+   373→        {state.videos.length === 0 ? (
+   374→          <p className="mt-3 text-sm text-muted-foreground">{tr('tools.noVideos')}</p>
+   375→        ) : (
+   376→          <ul className="mt-3 flex max-h-[480px] flex-col gap-3 overflow-y-auto" aria-label={tr('tools.video')}>
+   377→            {state.videos.map((v, i) => (
+   378→              <li key={v.id} className="rounded-xl border border-border p-3">
+   379→                <div className="flex min-h-[44px] items-center gap-2">
+   380→                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+   381→                    {v.sourceUrl}
+   382→                  </span>
+   383→                  <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">{v.added}</span>
+   384→                  <Button
+   385→                    size="sm"
+   386→                    variant="ghost"
+   387→                    className="min-h-[44px]"
+   388→                    onClick={() => onRemoveVideo(v.id)}
+   389→                    aria-label={`Remove video ${i + 1}`}
+   390→                  >
+   391→                    <Trash2 className="size-4" aria-hidden="true" />
+   392→                  </Button>
+   393→                </div>
+   394→                <iframe
+   395→                  src={youtubeEmbedUrl(v.videoId)}
+   396→                  className="aspect-video w-full rounded-xl"
+   397→                  allowFullScreen
+   398→                  title={`Study video ${i + 1}`}
+   399→                  referrerPolicy="no-referrer"
+   400→                  loading="lazy"
+   401→                />
+   402→              </li>
+   403→            ))}
+   404→          </ul>
+   405→        )}
+   406→        <p className="mt-3 text-xs text-muted-foreground">{tr('tools.videoDisclaimer')}</p>
+   407→      </section>
+   408→    </div>
+   409→  );
+   410→}
+   411→
+   412→// ---------- chunk 5B: Notes AI (practice-only, never XP) ----------
+   413→
+   414→/**
+   415→ * One note's AI block: consent checkbox + send button, then a result card
+   416→ * with summary bullets, glossary rows, flashcards and answerable practice
+   417→ * questions (local reveal, no XP). Save dispatches an `ai-generated` event
+   418→ * via LumioApp; the Saved chip comes from the projection.
+   419→ */
+   420→function NoteAiBlock({
+   421→  note,
+   422→  band,
+   423→  lang,
+   424→  date,
+   425→  saved,
+   426→  aiAvailable,
+   427→  signedIn,
+   428→  aiEnabled,
+   429→  demo,
+   430→  onSaveAi,
+   431→}: {
+   432→  note: LearnerNote;
+   433→  band: Band;
+   434→  lang: 'en' | 'hi' | 'hinglish';
+   435→  date: string;
+   436→  saved: boolean;
+   437→  aiAvailable: boolean;
+   438→  signedIn: boolean;
+   439→  aiEnabled: boolean;
+   440→  demo?: boolean;
+   441→  onSaveAi?: (args: {
+   442→    id: string;
+   443→    kind: 'notes';
+   444→    date: string;
+   445→    payload: NotesAiResult;
+   446→    label: string;
+   447→  }) => void;
+   448→}) {
+   449→  const [consent, setConsent] = useState(false);
+   450→  const [loading, setLoading] = useState(false);
+   451→  const [result, setResult] = useState<NotesAiResult | null>(null);
+   452→  const [label, setLabel] = useState<string>('');
+   453→  const [revealed, setRevealed] = useState<Record<number, boolean>>({});
+   454→  const [flipped, setFlipped] = useState<Record<number, boolean>>({});
+   455→
+   456→  const run = async () => {
+   457→    if (loading || !consent) return;
+   458→    setLoading(true);
+   459→    setRevealed({});
+   460→    setFlipped({});
+   461→    const res = await aiApi.notes({
+   462→      noteId: note.id,
+   463→      noteName: note.name,
+   464→      noteText: note.text,
+   465→      band,
+   466→      lang,
+   467→    });
+   468→    setLoading(false);
+   469→    if (res.ok && res.data?.data) {
+   470→      setResult(res.data.data);
+   471→      setLabel(res.data.label ?? 'ai_generated_unreviewed');
+   472→    } else {
+   473→      setResult(null);
+   474→    }
+   475→  };
+   476→
+   477→  // Honest gating: AI off -> nothing; gated -> tiny line instead of controls.
+   478→  if (!aiAvailable) return null;
+   479→  if (!signedIn || !aiEnabled) {
+   480→    return (
+   481→      <p className="mt-2 text-xs text-muted-foreground">
+   482→        {t(lang, !signedIn ? 'ai.needSignIn' : 'ai.optInFirst')}
+   483→      </p>
+   484→    );
+   485→  }
+   486→
+   487→  return (
+   488→    <div className="mt-2 border-t border-border/60 pt-2">
+   489→      {!result && !loading && (
+   490→        <div className="flex flex-wrap items-center gap-3">
+   491→          <label className="flex min-h-[44px] flex-1 cursor-pointer items-center gap-2 text-sm">
+   492→            <Checkbox checked={consent} onCheckedChange={(v) => setConsent(v === true)} />
+   493→            <span className="text-muted-foreground">{t(lang, 'ai.notesConsent')}</span>
+   494→          </label>
+   495→          <Button
+   496→            size="sm"
+   497→            className="press min-h-[44px]"
+   498→            disabled={!consent}
+   499→            onClick={() => void run()}
+   500→          >
+   501→            <Sparkles className="size-4 text-primary-foreground" aria-hidden="true" />{' '}
+   502→            {t(lang, 'ai.notesSend')}
+   503→          </Button>
+   504→        </div>
+   505→      )}
+   506→
+   507→      {loading && (
+   508→        <div role="status" aria-live="polite" className="mt-2 flex flex-col gap-2">
+   509→          <Skeleton className="h-4 w-2/3" />
+   510→          <Skeleton className="h-4 w-full" />
+   511→          <Skeleton className="h-4 w-5/6" />
+   512→        </div>
+   513→      )}
+   514→
+   515→      {result && (
+   516→        <div className="mt-2 rounded-2xl border border-border bg-background p-4">
+   517→          <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+   518→            {t(lang, 'ai.notesTitle')}
+   519→          </p>
+   520→
+   521→          {/* Summary bullets */}
+   522→          {result.summary?.length > 0 && (
+   523→            <div className="mt-3">
+   524→              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+   525→                {t(lang, 'ai.notesSummary')}
+   526→              </p>
+   527→              <ul className="mt-1 flex list-disc flex-col gap-1 pl-5">
+   528→                {result.summary.map((s, i) => (
+   529→                  <li key={i} className="text-sm">
+   530→                    <AiMarkdown text={s} className="inline" />
+   531→                  </li>
+   532→                ))}
+   533→              </ul>
+   534→            </div>
+   535→          )}
+   536→
+   537→          {/* Glossary term/meaning rows */}
+   538→          {result.glossary?.length > 0 && (
+   539→            <div className="mt-3">
+   540→              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+   541→                {t(lang, 'ai.notesGlossary')}
+   542→              </p>
+   543→              <dl className="mt-1 flex flex-col gap-2">
+   544→                {result.glossary.map((g, i) => (
+   545→                  <div key={i} className="rounded-xl bg-muted/60 p-3">
+   546→                    <dt className="text-sm font-semibold">{g.term}</dt>
+   547→                    <dd className="mt-0.5 text-sm text-muted-foreground">
+   548→                      <AiMarkdown text={g.meaning} className="inline" />
+   549→                    </dd>
+   550→                  </div>
+   551→                ))}
+   552→              </dl>
+   553→            </div>
+   554→          )}
+   555→
+   556→          {/* Flashcards grid: tap front/back to flip */}
+   557→          {result.flashcards?.length > 0 && (
+   558→            <div className="mt-3">
+   559→              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+   560→                {t(lang, 'ai.notesCards')}
+   561→              </p>
+   562→              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+   563→                {result.flashcards.map((c, i) => (
+   564→                  <button
+   565→                    key={i}
+   566→                    type="button"
+   567→                    onClick={() => setFlipped((f) => ({ ...f, [i]: !f[i] }))}
+   568→                    aria-pressed={flipped[i] === true}
+   569→                    className="press min-h-[44px] rounded-xl border border-border bg-muted/40 p-3 text-left"
+   570→                  >
+   571→                    <span className="block text-sm font-medium">{c.front}</span>
+   572→                    {flipped[i] ? (
+   573→                      <span className="mt-1 block text-sm text-muted-foreground">{c.back}</span>
+   574→                    ) : (
+   575→                      <span className="mt-1 block text-xs text-muted-foreground">
+   576→                        {t(lang, 'ai.showAnswer')}
+   577→                      </span>
+   578→                    )}
+   579→                  </button>
+   580→                ))}
+   581→              </div>
+   582→            </div>
+   583→          )}
+   584→
+   585→          {/* Practice questions: local reveal, no XP */}
+   586→          {result.questions?.length > 0 && (
+   587→            <div className="mt-3">
+   588→              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+   589→                {t(lang, 'ai.notesQuestions')} · {t(lang, 'ai.noXp')}
+   590→              </p>
+   591→              <div className="mt-2 flex flex-col gap-3">
+   592→                {result.questions.map((qa, qi) => (
+   593→                  <fieldset key={qi} className="rounded-xl border border-border p-3">
+   594→                    <legend className="sr-only">{qa.text}</legend>
+   595→                    <p className="text-sm font-medium">{qa.text}</p>
+   596→                    <div className="mt-2 flex flex-col gap-2">
+   597→                      {qa.options.map((opt, oi) => {
+   598→                        const answered = revealed[qi] === true;
+   599→                        const isAnswer = oi === qa.answer;
+   600→                        return (
+   601→                          <button
+   602→                            key={oi}
+   603→                            type="button"
+   604→                            disabled={answered}
+   605→                            onClick={() => setRevealed((r) => ({ ...r, [qi]: true }))}
+   606→                            aria-pressed={answered && isAnswer}
+   607→                            className={cn(
+   608→                              'press flex min-h-[44px] items-center gap-2 rounded-xl border-2 p-2.5 text-left text-sm font-medium',
+   609→                              !answered && 'border-border hover:border-primary/40',
+   610→                              answered && isAnswer && 'border-success bg-success-soft text-success-soft-foreground',
+   611→                              answered && !isAnswer && 'border-border opacity-60'
+   612→                            )}
+   613→                          >
+   614→                            <span
+   615→                              className="flex size-6 shrink-0 items-center justify-center rounded-full border border-border text-xs font-bold"
+   616→                              aria-hidden="true"
+   617→                            >
+   618→                              {String.fromCharCode(65 + oi)}
+   619→                            </span>
+   620→                            {opt}
+   621→                          </button>
+   622→                        );
+   623→                      })}
+   624→                    </div>
+   625→                    {revealed[qi] === true && <AiMarkdown text={qa.explanation} />}
+   626→                  </fieldset>
+   627→                ))}
+   628→              </div>
+   629→            </div>
+   630→          )}
+   631→
+   632→          {/* Save / Regenerate + label */}
+   633→          <div className="mt-3 flex flex-wrap items-center gap-2">
+   634→            {onSaveAi && (
+   635→              <Button
+   636→                size="sm"
+   637→                variant={saved ? 'ghost' : 'default'}
+   638→                className="min-h-[44px]"
+   639→                onClick={() =>
+   640→                  onSaveAi({
+   641→                    id: `notes#${note.id}#${lang}#${date}`,
+   642→                    kind: 'notes',
+   643→                    date,
+   644→                    payload: result,
+   645→                    label,
+   646→                  })
+   647→                }
+   648→              >
+   649→                {saved ? t(lang, 'ai.savedChip') : t(lang, 'ai.save')}
+   650→              </Button>
+   651→            )}
+   652→            <Button size="sm" variant="outline" className="min-h-[44px]" onClick={() => void run()}>
+   653→              {t(lang, 'ai.notesSend')}
+   654→            </Button>
+   655→          </div>
+   656→          <p className="mt-1 text-[11px] text-muted-foreground">{t(lang, 'ai.notesSaved')}</p>
+   657→          <AiLabel feature="notes" output={JSON.stringify(result)} lang={lang} demo={demo} />
+   658→        </div>
+   659→      )}
+   660→    </div>
+   661→  );
+   662→}
+   663→

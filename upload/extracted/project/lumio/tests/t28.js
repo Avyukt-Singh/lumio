@@ -1,0 +1,10 @@
+const {chromium}=require(require('child_process').execSync('npm root -g').toString().trim()+'/playwright');
+(async()=>{const b=await chromium.launch();const p=await b.newPage({viewport:{width:1200,height:800}});p.setDefaultTimeout(4000);const errs=[];p.on('pageerror',e=>errs.push(e.message));
+await p.goto('file:///home/claude/lumio/lumio.html');await p.waitForTimeout(250);
+await p.getByText('School Student').click();await p.locator('#root select').nth(0).selectOption({label:'CBSE'});await p.locator('#root select').nth(1).selectOption({label:'Class 9'});await require('./_ob.js').finish(p);await p.waitForTimeout(250);
+await p.locator('.nb',{hasText:'Practice'}).click();await p.locator('[data-go="proj"]').first().click();
+await p.evaluate("PJ.t=40");await p.locator('#pjv').fill('20');await p.locator('#pja').fill('45');await p.locator('[data-pj="go"]').click();
+console.log('45°,20 m/s:',(await p.locator('.card p').filter({hasText:'Range'}).innerText()),'|',await p.locator('[role=status]').innerText(),'| xp',await p.evaluate("S.xp"));
+await p.evaluate("PJ.t=60");await p.locator('[data-pj="go"]').click();console.log('miss:',await p.locator('[role=status]').innerText());
+console.log('svg path drawn:',await p.locator('polyline').count(),'| seniors see it:',await (async()=>{return 'n/a'})());
+console.log(errs);await b.close()})().catch(e=>console.log('FAIL',e.message.split('\n')[0]));

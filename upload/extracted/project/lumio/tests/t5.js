@@ -1,0 +1,23 @@
+const {chromium}=require(require('child_process').execSync('npm root -g').toString().trim()+'/playwright');
+(async()=>{const b=await chromium.launch();const p=await b.newPage({viewport:{width:1200,height:800}});p.setDefaultTimeout(5000);
+const errs=[];p.on('pageerror',e=>errs.push(e.message));
+const T=async(s)=>(await p.locator(s).first().innerText()).replace(/\n+/g,' | ');
+await p.goto('http://localhost:3112/');await p.waitForTimeout(400);
+await p.getByText('School Student').click();
+await p.locator('#root select').nth(0).selectOption({label:'CBSE'});await p.locator('#root select').nth(1).selectOption({label:'Class 11'});
+await require('./_ob.js').finish(p);await p.waitForTimeout(300);
+await p.locator('.nb',{hasText:'Practice'}).click();
+const g=await T('#root');console.log('games has Coding Arena:',g.includes('Coding'));
+await p.locator('[data-go="code"]').first().click().catch(async()=>{console.log('no data-go=code; buttons:',await p.locator('#root [data-go]').evaluateAll(e=>e.map(x=>x.dataset.go)))});
+await p.waitForTimeout(200);
+console.log('lab:',(await T('#root')).slice(0,120));
+await p.locator('#ce').fill('function isEven(n){return n%2===0}');await p.locator('[data-act="cr"]').click();await p.waitForFunction(()=>document.body.innerText.includes('All tests pass'),null,{timeout:5000}).catch(()=>{});
+console.log('JS result:',(await T('#root')).includes('All tests pass')?'pass':'NOT pass');
+await p.locator('[data-ex="3"]').click();await p.locator('#ce').fill('def is_even(n):\n    return n%2==0');await p.locator('[data-act="cr"]').click();
+await p.waitForFunction(()=>/Could not load|did not load|Running/.test(document.body.innerText),null,{timeout:8000}).catch(()=>{});await p.waitForTimeout(2500);
+console.log('Python offline message:',(await T('.grid .card:nth-child(2)')).slice(0,170));
+// leaderboard
+await p.locator('.nb',{hasText:'Leaderboard'}).click();
+await p.locator('[data-act="lbs"]').click();await p.waitForTimeout(600);
+console.log('LB no name:',(await T('#root')).match(/Set a display name[^|]*|Could not reach[^|]*|No one has joined[^|]*/)?.[0]);
+await b.close();console.log('errs',errs)})().catch(e=>console.log('FAIL',e.message.split('\n')[0]));

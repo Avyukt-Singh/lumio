@@ -1,0 +1,13 @@
+const {chromium}=require(require('child_process').execSync('npm root -g').toString().trim()+'/playwright');
+(async()=>{const b=await chromium.launch();const p=await b.newPage({viewport:{width:1200,height:800}});p.setDefaultTimeout(5000);const errs=[];p.on('pageerror',e=>errs.push(e.message));
+await p.goto('file:///home/claude/lumio/lumio.html');await p.waitForTimeout(250);
+await p.getByText('School Student').click();await p.locator('#root select').nth(0).selectOption({label:'CBSE'});await p.locator('#root select').nth(1).selectOption({label:'Class 11'});await require('./_ob.js').finish(p);await p.waitForTimeout(250);
+await p.locator('.nb',{hasText:'Practice'}).click();await p.locator('[data-go="code"]').first().click();
+const n=await p.evaluate("EXS.length");console.log('exercises:',n);
+const run=async(idx,code)=>{await p.locator('[data-ex="'+idx+'"]').click();if(code!==null)await p.locator('#ce').fill(code);await p.locator('[data-act="cr"]').click();await p.waitForTimeout(1200);return (await p.locator('#root').innerText()).replace(/\n+/g,' | ')};
+let t=await run(n-3,null);console.log('buggy average:',/All tests pass/.test(t)?'PASS(unexpected)':'fails as expected |',t.match(/✗[^|]*|✘[^|]*|Expected[^|]*/)?.[0]||'');
+console.log('hints shown:',await p.locator('details summary:has-text("Hint")').count());
+t=await run(n-3,'function average(arr){let total=0;for(let i=0;i<arr.length;i++){total+=arr[i]}return total/arr.length}');console.log('fixed average:',/All tests pass/.test(t));
+t=await run(n-2,null);console.log('buggy maxOf passes?',/All tests pass/.test(t));
+t=await run(n-2,'function maxOf(arr){let best=arr[0];for(const x of arr){if(x>best)best=x}return best}');console.log('fixed maxOf:',/All tests pass/.test(t),'| xp',await p.evaluate("S.xp"));
+console.log(errs);await b.close()})().catch(e=>console.log('FAIL',e.message.split('\n')[0]));

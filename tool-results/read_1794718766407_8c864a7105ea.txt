@@ -1,0 +1,809 @@
+     1→'use client';
+     2→
+     3→import { useEffect, useRef, useState } from 'react';
+     4→import type { ChangeEvent } from 'react';
+     5→import {
+     6→  Check,
+     7→  X,
+     8→  Play,
+     9→  RotateCcw,
+    10→  Lightbulb,
+    11→  Loader2,
+    12→  TriangleAlert,
+    13→} from 'lucide-react';
+    14→import { cn } from '@/lib/utils';
+    15→import { GameShell, type GameProps } from './GameShell';
+    16→import { CODING_EXERCISES } from '@/lib/lumio/content';
+    17→
+    18→// ---------------------------------------------------------------------------
+    19→// Types (no `any` anywhere; worker messages are unknown until narrowed)
+    20→// ---------------------------------------------------------------------------
+    21→
+    22→/** One per-test outcome, exactly what the worker / Python harness returns. */
+    23→interface TestResult {
+    24→  pass: boolean;
+    25→  got: string;
+    26→  expected: string;
+    27→  error?: string;
+    28→}
+    29→
+    30→/** Parent -> worker payload. */
+    31→interface WorkerRequest {
+    32→  code: string;
+    33→  /** Exercise id — used as a fallback lookup name for the defined function. */
+    34→  fnName: string;
+    35→  tests: Array<[unknown[], unknown]>;
+    36→}
+    37→
+    38→/** Worker -> parent payload. */
+    39→interface WorkerResponse {
+    40→  results: TestResult[];
+    41→  durationMs: number;
+    42→}
+    43→
+    44→/** Minimal Pyodide surface we rely on (kept honest and narrow). */
+    45→interface PyodideInterface {
+    46→  runPython: (code: string) => unknown;
+    47→  runPythonAsync: (code: string) => Promise<unknown>;
+    48→  globals: { set: (key: string, value: unknown) => void };
+    49→  setStdout: (options: { batched?: (line: string) => void }) => void;
+    50→}
+    51→type LoadPyodideFn = (options?: { indexURL?: string }) => Promise<PyodideInterface>;
+    52→
+    53→function getPyodideLoader(): LoadPyodideFn | undefined {
+    54→  return (window as unknown as { loadPyodide?: LoadPyodideFn }).loadPyodide;
+    55→}
+    56→
+    57→// ---------------------------------------------------------------------------
+    58→// Content
+    59→// ---------------------------------------------------------------------------
+    60→
+    61→const EXERCISES = CODING_EXERCISES;
+    62→const DRAFTS_KEY = 'lumio-code-drafts';
+    63→const PYODIDE_SCRIPT_URL = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js';
+    64→const PYODIDE_INDEX_URL = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';
+    65→const JS_TIMEOUT_MS = 2000;
+    66→const PY_TIMEOUT_MS = 3000;
+    67→
+    68→const PY_FAIL_MESSAGE =
+    69→  'Python needs to download its runtime (Pyodide) once — it looks like this device is offline right now. JavaScript exercises work offline.';
+    70→const PY_TIMEOUT_MESSAGE =
+    71→  'Your Python code took longer than 3 seconds — check for a very slow or infinite loop.';
+    72→
+    73→/**
+    74→ * Progressive hint ladders, 3 levels each. The three "Debug:" ladders
+    75→ * (average / maxOf / total_even) are ported verbatim from the prototype's
+    76→ * EXH map in lumio.html; the other six were written in the same voice from
+    77→ * each exercise's intent.
+    78→ */
+    79→const HINTS: Record<string, string[]> = {
+    80→  isEven: [
+    81→    'Run the tests and see which one fails first.',
+    82→    'A number is even when dividing it by 2 leaves no remainder. The % operator gives a remainder: 7 % 2 is 1, but 4 % 2 is 0.',
+    83→    'Return n % 2 === 0.',
+    84→  ],
+    85→  sumList: [
+    86→    'Run it and read the result. What does the empty-list test expect? Zero.',
+    87→    'Start a total at 0 and add every number in the list with a loop.',
+    88→    'let total = 0; for (const x of arr) total += x; then return total.',
+    89→  ],
+    90→  reverseText: [
+    91→    'What should reverseText("") return? The empty string.',
+    92→    's.split("") turns the string into a list of characters you can reverse, and join("") glues it back.',
+    93→    'return s.split("").reverse().join("");',
+    94→  ],
+    95→  is_even: [
+    96→    'Run the tests and read the result. Is it True or False?',
+    97→    'In Python, % gives the remainder: 4 % 2 is 0, so even numbers have n % 2 == 0.',
+    98→    'return n % 2 == 0',
+    99→  ],
+   100→  count_vowels: [
+   101→    'Run the tests and see which one fails first.',
+   102→    'Lowercase the text first (text.lower()), then check each character against the vowels "aeiou".',
+   103→    'return sum(1 for ch in text.lower() if ch in "aeiou")',
+   104→  ],
+   105→  factorial: [
+   106→    'What should factorial(0) return? The tests say 1.',
+   107→    'Start a result at 1 and multiply it by every number from 1 up to and including n.',
+   108→    'result = 1; for i in range(1, n + 1): result *= i — then return result.',
+   109→  ],
+   110→  average: [
+   111→    'Run it and read the result. Is it a number?',
+   112→    'Arrays start at index 0, so the last index is arr.length − 1.',
+   113→    'Look at the loop condition: i <= arr.length goes one step too far. Use i < arr.length.',
+   114→  ],
+   115→  maxOf: [
+   116→    'Try the second test by hand: all numbers are negative.',
+   117→    'What is best at the start? Is 0 bigger than every number in that list?',
+   118→    'Start with best = arr[0] instead of 0.',
+   119→  ],
+   120→  total_even: [
+   121→    'Run the tests and see which one fails first.',
+   122→    'Your loop adds every number. Which numbers should it skip?',
+   123→    'Add an if check: if n % 2 == 0: before adding.',
+   124→  ],
+   125→};
+   126→
+   127→// ---------------------------------------------------------------------------
+   128→// Web Worker source (JavaScript exercises). Built at runtime from a Blob URL
+   129→// so the worker is fully isolated: no DOM, no app state, hard to escape.
+   130→// Protocol — in: WorkerRequest, out: WorkerResponse.
+   131→// ---------------------------------------------------------------------------
+   132→
+   133→const WORKER_SOURCE = `
+   134→self.onmessage = function (e) {
+   135→  var t0 = Date.now();
+   136→  var data = e.data || {};
+   137→  var code = String(data.code || '');
+   138→  var fnName = String(data.fnName || '');
+   139→  var tests = Array.isArray(data.tests) ? data.tests : [];
+   140→
+   141→  function fmt(v) {
+   142→    try {
+   143→      var s = JSON.stringify(v);
+   144→      return s === undefined ? String(v) : s;
+   145→    } catch (err) {
+   146→      return String(v);
+   147→    }
+   148→  }
+   149→
+   150→  function deepEq(a, b) {
+   151→    if (a === b) return true;
+   152→    if (typeof a === 'number' && typeof b === 'number' && Number.isNaN(a) && Number.isNaN(b)) return true;
+   153→    if (Array.isArray(a) && Array.isArray(b)) {
+   154→      if (a.length !== b.length) return false;
+   155→      for (var i = 0; i < a.length; i++) { if (!deepEq(a[i], b[i])) return false; }
+   156→      return true;
+   157→    }
+   158→    if (a && b && typeof a === 'object' && typeof b === 'object') {
+   159→      var ka = Object.keys(a).sort(), kb = Object.keys(b).sort();
+   160→      if (ka.length !== kb.length) return false;
+   161→      for (var j = 0; j < ka.length; j++) {
+   162→        if (ka[j] !== kb[j]) return false;
+   163→        if (!deepEq(a[ka[j]], b[ka[j]])) return false;
+   164→      }
+   165→      return true;
+   166→    }
+   167→    return false;
+   168→  }
+   169→
+   170→  var fn;
+   171→  try {
+   172→    fn = new Function('return (' + code + ')')();
+   173→  } catch (e1) {
+   174→    fn = undefined;
+   175→  }
+   176→  if (typeof fn !== 'function') {
+   177→    // Fallback for multi-statement code: evaluate it in an IIFE and pick up
+   178→    // the function by name (fnName always comes from our own exercise data).
+   179→    try {
+   180→      fn = eval('(function(){' + code + '\\n;return typeof ' + fnName + ' === "function" ? ' + fnName + ' : undefined;})()');
+   181→    } catch (e2) {
+   182→      fn = undefined;
+   183→    }
+   184→  }
+   185→
+   186→  var results = [];
+   187→  if (typeof fn !== 'function') {
+   188→    var msg = 'Your code could not be turned into a callable function. Check for syntax errors.';
+   189→    for (var t = 0; t < tests.length; t++) {
+   190→      results.push({ pass: false, got: '—', expected: fmt(tests[t][1]), error: msg });
+   191→    }
+   192→  } else {
+   193→    for (var k = 0; k < tests.length; k++) {
+   194→      var args = tests[k][0];
+   195→      var expected = tests[k][1];
+   196→      try {
+   197→        var got = fn.apply(null, args);
+   198→        results.push({ pass: deepEq(got, expected), got: fmt(got), expected: fmt(expected) });
+   199→      } catch (err) {
+   200→        results.push({
+   201→          pass: false,
+   202→          got: 'threw an error',
+   203→          expected: fmt(expected),
+   204→          error: String(err && err.message ? err.message : err),
+   205→        });
+   206→      }
+   207→    }
+   208→  }
+   209→
+   210→  self.postMessage({ results: results, durationMs: Date.now() - t0 });
+   211→};
+   212→`;
+   213→
+   214→// ---------------------------------------------------------------------------
+   215→// Python harness (runs inside Pyodide on the main thread). The learner's code
+   216→// is executed first so it defines the function, then this harness calls it
+   217→// once per test, compares with ==, and returns a JSON string we parse here.
+   218→// ---------------------------------------------------------------------------
+   219→
+   220→function pythonHarness(fnName: string): string {
+   221→  return [
+   222→    'import json',
+   223→    '_lumio_in = json.loads(_lumio_tests_json)',
+   224→    '_lumio_out = []',
+   225→    'for _args, _expected in _lumio_in:',
+   226→    '    try:',
+   227→    '        _got = ' + fnName + '(*_args)',
+   228→    '        _lumio_out.append({"pass": bool(_got == _expected), "got": repr(_got), "expected": repr(_expected)})',
+   229→    '    except Exception as _e:',
+   230→    '        _lumio_out.append({"pass": False, "got": "threw an error: " + str(_e), "expected": repr(_expected)})',
+   231→    'json.dumps(_lumio_out)',
+   232→  ].join('\n');
+   233→}
+   234→
+   235→// ---------------------------------------------------------------------------
+   236→// Narrowing helpers (strict TS: everything crossing a boundary is unknown)
+   237→// ---------------------------------------------------------------------------
+   238→
+   239→function isTestResult(v: unknown): v is TestResult {
+   240→  if (typeof v !== 'object' || v === null) return false;
+   241→  const o = v as Record<string, unknown>;
+   242→  if (typeof o.pass !== 'boolean') return false;
+   243→  if (typeof o.got !== 'string' || typeof o.expected !== 'string') return false;
+   244→  if (o.error !== undefined && typeof o.error !== 'string') return false;
+   245→  return true;
+   246→}
+   247→
+   248→function isWorkerResponse(v: unknown): v is WorkerResponse {
+   249→  if (typeof v !== 'object' || v === null) return false;
+   250→  const o = v as Record<string, unknown>;
+   251→  return (
+   252→    Array.isArray(o.results) &&
+   253→    o.results.every(isTestResult) &&
+   254→    typeof o.durationMs === 'number'
+   255→  );
+   256→}
+   257→
+   258→type PyStatus = 'idle' | 'loading' | 'ready' | 'failed';
+   259→type RunState =
+   260→  | { kind: 'idle' }
+   261→  | { kind: 'running' }
+   262→  | { kind: 'error'; message: string }
+   263→  | { kind: 'done'; results: TestResult[]; durationMs: number };
+   264→
+   265→interface CheckFeedback {
+   266→  kind: 'info' | 'fail' | 'success';
+   267→  text: string;
+   268→}
+   269→
+   270→// ---------------------------------------------------------------------------
+   271→// CodingLabGame
+   272→// ---------------------------------------------------------------------------
+   273→
+   274→export function CodingLabGame(props: GameProps) {
+   275→  // ---- plain state ----
+   276→  const [selectedIndex, setSelectedIndex] = useState(0);
+   277→  // Saved drafts restore via a lazy initialiser (no setState in effects).
+   278→  // This screen only mounts client-side after the app's hydration gate, so
+   279→  // localStorage is safe to read during the first render.
+   280→  function loadDrafts(): Record<string, string> {
+   281→    try {
+   282→      const raw = window.localStorage.getItem(DRAFTS_KEY);
+   283→      if (!raw) return {};
+   284→      const parsed: unknown = JSON.parse(raw);
+   285→      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+   286→        return parsed as Record<string, string>;
+   287→      }
+   288→    } catch {
+   289→      // Corrupt or missing storage: start fresh with starters. Honest default.
+   290→    }
+   291→    return {};
+   292→  }
+   293→  const [drafts, setDrafts] = useState<Record<string, string>>(loadDrafts);
+   294→  const [completed, setCompleted] = useState<Set<string>>(new Set());
+   295→  const [hintsShown, setHintsShown] = useState(0);
+   296→  const [run, setRun] = useState<RunState>({ kind: 'idle' });
+   297→  const [printOutput, setPrintOutput] = useState<string | null>(null);
+   298→  const [celebrate, setCelebrate] = useState<string | null>(null);
+   299→  const [pyStatus, setPyStatus] = useState<PyStatus>('idle');
+   300→
+   301→  // ---- refs for cleanup ----
+   302→  const workerRef = useRef<Worker | null>(null);
+   303→  const jsTimerRef = useRef<number | null>(null);
+   304→  const pyTimerRef = useRef<number | null>(null);
+   305→  const pyodideRef = useRef<PyodideInterface | null>(null);
+   306→  const pyLoadingRef = useRef(false); // guards double-start across re-renders
+   307→  const pyUnmountedRef = useRef(false);
+   308→
+   309→  // ---- derivations (consts ABOVE all effects, per project rule) ----
+   310→  const ex = EXERCISES[selectedIndex];
+   311→  const isPython = ex.lang === 'py';
+   312→  const code = drafts[ex.id] ?? ex.starter;
+   313→  const hints = HINTS[ex.id] ?? [];
+   314→  const passCount =
+   315→    run.kind === 'done' ? run.results.filter((r) => r.pass).length : 0;
+   316→  const summary =
+   317→    run.kind === 'done'
+   318→      ? `${passCount} of ${run.results.length} tests pass`
+   319→      : run.kind === 'running'
+   320→        ? 'Running…'
+   321→        : run.kind === 'error'
+   322→          ? 'Could not run the tests'
+   323→          : 'Press “Run tests” to check your code.';
+   324→
+   325→  // ---- effects ----
+   326→
+   327→  // Persist drafts whenever they change (skip the initial empty state so we
+   328→  // never wipe saved work before it has loaded).
+   329→  useEffect(() => {
+   330→    if (Object.keys(drafts).length === 0) return;
+   331→    try {
+   332→      window.localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+   333→    } catch {
+   334→      // Storage may be unavailable (private mode); the app still works.
+   335→    }
+   336→  }, [drafts]);
+   337→
+   338→  // Lazily load Pyodide ONLY when a Python exercise is first opened. The
+   339→  // start is guarded by a ref (not pyStatus state) so a re-render can never
+   340→  // cancel an in-flight load; the status change runs in a microtask so no
+   341→  // setState happens synchronously inside the effect body.
+   342→  useEffect(() => {
+   343→    if (!isPython || pyLoadingRef.current) return;
+   344→    pyLoadingRef.current = true;
+   345→    queueMicrotask(() => {
+   346→      setPyStatus('loading');
+   347→
+   348→      const finish = () => {
+   349→        const load = getPyodideLoader();
+   350→        if (typeof load !== 'function') {
+   351→          setPyStatus('failed');
+   352→          return;
+   353→        }
+   354→        load({ indexURL: PYODIDE_INDEX_URL })
+   355→          .then((py) => {
+   356→            if (pyUnmountedRef.current) return;
+   357→            pyodideRef.current = py;
+   358→            setPyStatus('ready');
+   359→          })
+   360→          .catch(() => {
+   361→            if (pyUnmountedRef.current) return;
+   362→            setPyStatus('failed');
+   363→          });
+   364→      };
+   365→
+   366→      const existing = document.querySelector(
+   367→        'script[data-lumio-pyodide]'
+   368→      ) as HTMLScriptElement | null;
+   369→      if (existing) {
+   370→        if (getPyodideLoader()) {
+   371→          finish();
+   372→        } else {
+   373→          existing.addEventListener('load', finish, { once: true });
+   374→          existing.addEventListener(
+   375→            'error',
+   376→            () => {
+   377→              if (!pyUnmountedRef.current) setPyStatus('failed');
+   378→            },
+   379→            { once: true }
+   380→          );
+   381→        }
+   382→      } else {
+   383→        const script = document.createElement('script');
+   384→        script.src = PYODIDE_SCRIPT_URL;
+   385→        script.async = true;
+   386→        script.dataset.lumioPyodide = 'true';
+   387→        script.addEventListener('load', finish, { once: true });
+   388→        script.addEventListener(
+   389→          'error',
+   390→          () => {
+   391→            if (!pyUnmountedRef.current) setPyStatus('failed');
+   392→          },
+   393→          { once: true }
+   394→        );
+   395→        document.head.appendChild(script);
+   396→      }
+   397→    });
+   398→  }, [isPython]);
+   399→
+   400→  // Unmount cleanup: terminate any live worker and clear every timer.
+   401→  useEffect(() => {
+   402→    return () => {
+   403→      pyUnmountedRef.current = true;
+   404→      if (workerRef.current) {
+   405→        workerRef.current.terminate();
+   406→        workerRef.current = null;
+   407→      }
+   408→      if (jsTimerRef.current !== null) window.clearTimeout(jsTimerRef.current);
+   409→      if (pyTimerRef.current !== null) window.clearTimeout(pyTimerRef.current);
+   410→    };
+   411→  }, []);
+   412→
+   413→  // ---- handlers ----
+   414→
+   415→  function selectExercise(i: number) {
+   416→    setSelectedIndex(i);
+   417→    setHintsShown(0);
+   418→    setRun({ kind: 'idle' });
+   419→    setPrintOutput(null);
+   420→    setCelebrate(null);
+   421→  }
+   422→
+   423→  function editCode(ev: ChangeEvent<HTMLTextAreaElement>) {
+   424→    const value = ev.target.value;
+   425→    setDrafts((prev) => ({ ...prev, [ex.id]: value }));
+   426→  }
+   427→
+   428→  function resetCode() {
+   429→    setDrafts((prev) => {
+   430→      const next = { ...prev };
+   431→      delete next[ex.id];
+   432→      return next;
+   433→    });
+   434→    setRun({ kind: 'idle' });
+   435→    setPrintOutput(null);
+   436→    setCelebrate(null);
+   437→  }
+   438→
+   439→  /** Shared finish: record results, celebrate + onWin on first full pass. */
+   440→  function finishRun(results: TestResult[], durationMs: number) {
+   441→    setRun({ kind: 'done', results, durationMs });
+   442→    const allPass = results.length > 0 && results.every((r) => r.pass);
+   443→    if (allPass && !completed.has(ex.id)) {
+   444→      setCompleted((prev) => {
+   445→        const next = new Set(prev);
+   446→        next.add(ex.id);
+   447→        return next;
+   448→      });
+   449→      setCelebrate(
+   450→        `Brilliant — every test passes for “${ex.title}”. That is real code you wrote.`
+   451→      );
+   452→      props.onWin();
+   453→    } else if (allPass) {
+   454→      setCelebrate(`All tests still pass for “${ex.title}” — nice and clean.`);
+   455→    } else {
+   456→      setCelebrate(null);
+   457→    }
+   458→  }
+   459→
+   460→  function runJsTests() {
+   461→    if (run.kind === 'running') return;
+   462→    if (typeof Worker === 'undefined') {
+   463→      setRun({
+   464→        kind: 'error',
+   465→        message:
+   466→          'This browser does not support Web Workers, so I cannot safely run your JavaScript here. Nothing was faked — the tests simply cannot run in this browser.',
+   467→      });
+   468→      return;
+   469→    }
+   470→    setRun({ kind: 'running' });
+   471→    setCelebrate(null);
+   472→    setPrintOutput(null);
+   473→
+   474→    // Fresh worker per run: created lazily, terminated after use, no leaks.
+   475→    const blob = new Blob([WORKER_SOURCE], { type: 'text/javascript' });
+   476→    const url = URL.createObjectURL(blob);
+   477→    const worker = new Worker(url);
+   478→    URL.revokeObjectURL(url); // the worker has already taken its reference
+   479→    workerRef.current = worker;
+   480→
+   481→    if (jsTimerRef.current !== null) window.clearTimeout(jsTimerRef.current);
+   482→    jsTimerRef.current = window.setTimeout(() => {
+   483→      worker.terminate();
+   484→      workerRef.current = null;
+   485→      jsTimerRef.current = null;
+   486→      setRun({
+   487→        kind: 'error',
+   488→        message:
+   489→          'Your code ran too long (over 2 seconds) — check for an infinite loop.',
+   490→      });
+   491→    }, JS_TIMEOUT_MS);
+   492→
+   493→    worker.onmessage = (ev: MessageEvent<unknown>) => {
+   494→      if (jsTimerRef.current !== null) window.clearTimeout(jsTimerRef.current);
+   495→      jsTimerRef.current = null;
+   496→      worker.terminate();
+   497→      workerRef.current = null;
+   498→      if (!isWorkerResponse(ev.data)) {
+   499→        setRun({
+   500→          kind: 'error',
+   501→          message: 'The test runner returned something unexpected. Please try again.',
+   502→        });
+   503→        return;
+   504→      }
+   505→      finishRun(ev.data.results, ev.data.durationMs);
+   506→    };
+   507→    worker.onerror = (ev: ErrorEvent) => {
+   508→      if (jsTimerRef.current !== null) window.clearTimeout(jsTimerRef.current);
+   509→      jsTimerRef.current = null;
+   510→      worker.terminate();
+   511→      workerRef.current = null;
+   512→      setRun({
+   513→        kind: 'error',
+   514→        message: `Your code crashed while running: ${ev.message || 'unknown error'}`,
+   515→      });
+   516→    };
+   517→
+   518→    const request: WorkerRequest = {
+   519→      code,
+   520→      fnName: ex.id,
+   521→      tests: ex.tests,
+   522→    };
+   523→    worker.postMessage(request);
+   524→  }
+   525→
+   526→  async function runPythonTests() {
+   527→    if (run.kind === 'running') return;
+   528→    if (pyStatus === 'failed') {
+   529→      setRun({ kind: 'error', message: PY_FAIL_MESSAGE });
+   530→      return;
+   531→    }
+   532→    const py = pyodideRef.current;
+   533→    if (pyStatus !== 'ready' || !py) {
+   534→      setRun({
+   535→        kind: 'error',
+   536→        message:
+   537→          'Python is still downloading its runtime (Pyodide). Give it a few seconds, then press “Run tests” again.',
+   538→      });
+   539→      return;
+   540→    }
+   541→
+   542→    setRun({ kind: 'running' });
+   543→    setCelebrate(null);
+   544→    setPrintOutput(null);
+   545→
+   546→    if (pyTimerRef.current !== null) window.clearTimeout(pyTimerRef.current);
+   547→
+   548→    // Promise.race: the honest 3-second limit on the Python run.
+   549→    const exec = (async () => {
+   550→      const outs: string[] = [];
+   551→      py.setStdout({ batched: (line: string) => { outs.push(line); } });
+   552→      // 1) The learner's code defines the function (a syntax error here is
+   553→      //    reported honestly, never faked).
+   554→      py.runPython(code);
+   555→      // 2) The harness calls the function with each test's JSON-serialised
+   556→      //    args and compares with == inside Python.
+   557→      py.globals.set('_lumio_tests_json', JSON.stringify(ex.tests));
+   558→      const raw = await py.runPythonAsync(pythonHarness(ex.id));
+   559→      if (typeof raw !== 'string') {
+   560→        throw new Error('the test harness returned something unexpected');
+   561→      }
+   562→      const parsed: unknown = JSON.parse(raw);
+   563→      if (!Array.isArray(parsed) || !parsed.every(isTestResult)) {
+   564→        throw new Error('the test results were not in the expected shape');
+   565→      }
+   566→      if (outs.length > 0) setPrintOutput(outs.join('\n'));
+   567→      return parsed as TestResult[];
+   568→    })();
+   569→
+   570→    const timeout = new Promise<never>((_, reject) => {
+   571→      pyTimerRef.current = window.setTimeout(
+   572→        () => reject(new Error(PY_TIMEOUT_MESSAGE)),
+   573→        PY_TIMEOUT_MS
+   574→      );
+   575→    });
+   576→
+   577→    try {
+   578→      const results = await Promise.race([exec, timeout]);
+   579→      if (pyTimerRef.current !== null) window.clearTimeout(pyTimerRef.current);
+   580→      pyTimerRef.current = null;
+   581→      finishRun(results, 0);
+   582→    } catch (err) {
+   583→      if (pyTimerRef.current !== null) window.clearTimeout(pyTimerRef.current);
+   584→      pyTimerRef.current = null;
+   585→      setRun({
+   586→        kind: 'error',
+   587→        message: `Python could not run your code: ${
+   588→          err instanceof Error ? err.message : String(err)
+   589→        }`,
+   590→      });
+   591→    }
+   592→  }
+   593→
+   594→  function runTests() {
+   595→    if (isPython) void runPythonTests();
+   596→    else runJsTests();
+   597→  }
+   598→
+   599→  // ---- render ----
+   600→
+   601→  return (
+   602→    <GameShell
+   603→      title="Coding Lab"
+   604→      blurb="Write real JavaScript or Python, run it against automated tests, and fix the bugs. Debug exercises come with a hint ladder."
+   605→      modelNote="JavaScript runs in an isolated Web Worker (2-second limit). Python runs locally via Pyodide (WebAssembly) and needs internet the first time only. No code ever leaves this device."
+   606→      xp={25}
+   607→      won={props.won}
+   608→      onBack={props.onBack}
+   609→    >
+   610→      <div className="flex flex-col gap-4">
+   611→        {/* Exercise chip bar */}
+   612→        <div
+   613→          className="flex flex-wrap gap-2"
+   614→          role="group"
+   615→          aria-label="Choose an exercise"
+   616→        >
+   617→          {EXERCISES.map((e, i) => {
+   618→            const done = completed.has(e.id);
+   619→            return (
+   620→              <button
+   621→                key={e.id}
+   622→                type="button"
+   623→                aria-pressed={i === selectedIndex}
+   624→                onClick={() => selectExercise(i)}
+   625→                className={cn(
+   626→                  'press inline-flex min-h-[44px] items-center gap-1.5 rounded-full border px-3 text-sm font-medium',
+   627→                  i === selectedIndex
+   628→                    ? 'border-primary bg-primary/10 text-primary'
+   629→                    : 'border-border bg-card text-foreground hover:bg-accent/10'
+   630→                )}
+   631→              >
+   632→                {done && <Check className="size-3.5 text-emerald-600" aria-hidden="true" />}
+   633→                {e.title}
+   634→                <span
+   635→                  className={cn(
+   636→                    'rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase',
+   637→                    e.lang === 'py'
+   638→                      ? 'bg-emerald-500/15 text-emerald-700'
+   639→                      : 'bg-muted text-muted-foreground'
+   640→                  )}
+   641→                >
+   642→                  {e.lang === 'py' ? 'Py' : 'JS'}
+   643→                </span>
+   644→              </button>
+   645→            );
+   646→          })}
+   647→        </div>
+   648→
+   649→        <div className="grid gap-4 lg:grid-cols-2">
+   650→          {/* Editor column */}
+   651→          <div className="flex flex-col gap-3">
+   652→            <div className="flex items-center justify-between gap-2">
+   653→              <h2 className="font-heading text-lg font-bold">{ex.title}</h2>
+   654→              <button
+   655→                type="button"
+   656→                onClick={resetCode}
+   657→                className="press inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-border bg-card px-3 text-sm font-medium hover:bg-accent/10"
+   658→              >
+   659→                <RotateCcw className="size-4" aria-hidden="true" /> Reset
+   660→              </button>
+   661→            </div>
+   662→            <textarea
+   663→              value={code}
+   664→              onChange={editCode}
+   665→              spellCheck={false}
+   666→              aria-label="Code editor"
+   667→              className="min-h-[280px] w-full resize-y rounded-xl border border-border bg-background p-3 font-mono text-sm leading-relaxed text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+   668→            />
+   669→            {isPython && (
+   670→              <p className="text-xs text-muted-foreground">
+   671→                Honest note: Python runs on this page, so a truly infinite loop
+   672→                cannot be interrupted mid-run — if the tab freezes, refresh the
+   673→                page and your draft will still be here.
+   674→              </p>
+   675→            )}
+   676→            <button
+   677→              type="button"
+   678→              onClick={runTests}
+   679→              disabled={run.kind === 'running'}
+   680→              className="press inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-primary px-4 font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+   681→            >
+   682→              {run.kind === 'running' ? (
+   683→                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+   684→              ) : (
+   685→                <Play className="size-4" aria-hidden="true" />
+   686→              )}
+   687→              Run tests
+   688→            </button>
+   689→          </div>
+   690→
+   691→          {/* Results / hints column */}
+   692→          <div className="flex flex-col gap-4">
+   693→            <div
+   694→              aria-live="polite"
+   695→              className="rounded-xl border border-border bg-background p-3 text-sm"
+   696→            >
+   697→              <p className="font-semibold">{summary}</p>
+   698→              {run.kind === 'error' && (
+   699→                <p className="mt-2 flex items-start gap-1.5 text-rose-600">
+   700→                  <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+   701→                  <span>{run.message}</span>
+   702→                </p>
+   703→              )}
+   704→              {run.kind === 'done' && (
+   705→                <ul className="mt-2 flex flex-col gap-2">
+   706→                  {run.results.map((r, i) => (
+   707→                    <li
+   708→                      key={i}
+   709→                      className={cn(
+   710→                        'rounded-lg border p-2',
+   711→                        r.pass
+   712→                          ? 'border-emerald-500/40 bg-emerald-500/10'
+   713→                          : 'border-rose-500/40 bg-rose-500/10'
+   714→                      )}
+   715→                    >
+   716→                      <p className="flex items-center gap-1.5 font-medium">
+   717→                        {r.pass ? (
+   718→                          <Check className="size-4 text-emerald-600" aria-hidden="true" />
+   719→                        ) : (
+   720→                          <X className="size-4 text-rose-600" aria-hidden="true" />
+   721→                        )}
+   722→                        Test {i + 1} {r.pass ? 'passes' : 'fails'}
+   723→                      </p>
+   724→                      <p className="mt-1 font-mono text-xs">
+   725→                        expected {r.expected} · got {r.got}
+   726→                      </p>
+   727→                      {r.error && (
+   728→                        <p className="mt-1 text-xs text-rose-600">{r.error}</p>
+   729→                      )}
+   730→                    </li>
+   731→                  ))}
+   732→                </ul>
+   733→              )}
+   734→              {run.kind === 'done' && (
+   735→                <p className="mt-2 text-xs text-muted-foreground">
+   736→                  {isPython
+   737→                    ? 'Ran in local Python (Pyodide, WebAssembly).'
+   738→                    : `Ran in the Web Worker in ${Math.max(0, run.durationMs)} ms.`}
+   739→                </p>
+   740→              )}
+   741→              {printOutput !== null && (
+   742→                <div className="mt-2">
+   743→                  <p className="text-xs font-semibold text-muted-foreground">
+   744→                    Printed output
+   745→                  </p>
+   746→                  <pre className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg bg-muted p-2 font-mono text-xs">
+   747→                    {printOutput}
+   748→                  </pre>
+   749→                </div>
+   750→              )}
+   751→            </div>
+   752→
+   753→            {celebrate && (
+   754→              <p
+   755→                className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm font-medium text-emerald-700"
+   756→                role="status"
+   757→              >
+   758→                {celebrate}
+   759→              </p>
+   760→            )}
+   761→
+   762→            {/* Hint ladder (3 progressive levels, honest) */}
+   763→            {hints.length > 0 && (
+   764→              <div className="rounded-xl border border-border bg-background p-3">
+   765→                <p className="flex items-center gap-1.5 text-sm font-semibold">
+   766→                  <Lightbulb className="size-4" aria-hidden="true" /> Hints
+   767→                </p>
+   768→                <ol className="mt-2 flex flex-col gap-1.5 text-sm">
+   769→                  {hints.slice(0, hintsShown).map((h, i) => (
+   770→                    <li key={i}>
+   771→                      <span className="font-medium">Hint {i + 1}:</span> {h}
+   772→                    </li>
+   773→                  ))}
+   774→                </ol>
+   775→                {hintsShown < hints.length && (
+   776→                  <button
+   777→                    type="button"
+   778→                    onClick={() => setHintsShown((n) => n + 1)}
+   779→                    className="press mt-2 inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-border bg-card px-3 text-sm font-medium hover:bg-accent/10"
+   780→                  >
+   781→                    Show hint {hintsShown + 1} of {hints.length}
+   782→                  </button>
+   783→                )}
+   784→              </div>
+   785→            )}
+   786→
+   787→            {/* Pyodide status (honest, never faked) */}
+   788→            {isPython && pyStatus !== 'ready' && (
+   789→              <p className="flex items-start gap-1.5 rounded-xl border border-border bg-background p-3 text-xs text-muted-foreground">
+   790→                {pyStatus === 'loading' ? (
+   791→                  <>
+   792→                    <Loader2 className="mt-0.5 size-3.5 shrink-0 animate-spin" aria-hidden="true" />
+   793→                    <span>
+   794→                      Downloading the Python runtime (Pyodide, about 10 MB, one
+   795→                      time only). JavaScript exercises work meanwhile.
+   796→                    </span>
+   797→                  </>
+   798→                ) : (
+   799→                  <span>{PY_FAIL_MESSAGE}</span>
+   800→                )}
+   801→              </p>
+   802→            )}
+   803→          </div>
+   804→        </div>
+   805→      </div>
+   806→    </GameShell>
+   807→  );
+   808→}
+   809→

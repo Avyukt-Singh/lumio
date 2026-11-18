@@ -1,0 +1,25 @@
+{
+  "name": "Lumio — Learn · Practice · Grow",
+  "short_name": "Lumio",
+  "description": "Offline-first gamified learning for Indian school students, droppers and beyond-Class-12 learners. Sample content, honestly labelled.",
+  "id": "/",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F4F3FF",
+  "theme_color": "#4F46E5",
+  "lang": "en-IN",
+  "icons": [
+    {
+      "src": "/mascot/owl-icon.webp",
+      "sizes": "160x160",
+      "type": "image/webp",
+      "purpose": "any"
+    },
+    {
+      "src": "/mascot/owl-standing.webp",
+      "sizes": "160x160",
+      "type": "image/webp",
+      "purpose": "maskable"
+    }
+  ]
+}

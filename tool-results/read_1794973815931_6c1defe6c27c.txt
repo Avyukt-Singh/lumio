@@ -1,0 +1,395 @@
+     1→     1→# Lumio 2.0: Syllabus Tracker (Class 11) with AI Daily Plan
+     2→     2→
+     3→     3→> **How to use.** Paste everything below the line into your coding LLM with the Lumio repository open. The full Class 11 syllabus data is included in **Appendix A**, so the model does not need the PDFs. If you have already run the earlier *Accounts + AI* prompt, the AI part will plug into that gateway; if not, this prompt still works (deterministic planner first, AI behind the same adapter interface with a fake).
+     4→     4→
+     5→     5→---
+     6→     6→
+     7→     7→## 0. Role and outcome
+     8→     8→
+     9→     9→You are a senior full-stack engineer extending **Lumio 2.0** (Next.js 16, React 19, TypeScript strict, Tailwind 4, shadcn/ui, Dexie event log). Add a new **sidebar menu item, "Syllabus"**, that shows the **entire CBSE Class 11 (2026-27) syllabus for five subjects**: Mathematics, Physics, Chemistry, Computer Science, and Artificial Intelligence. The learner marks every topic with how far they got and how sure they feel, and adds short notes such as "lacks question practice". An **"Today's plan"** feature then uses those marks to suggest what to study today: a **deterministic planner that always works**, optionally refined by **AI**.
+    10→    10→
+    11→    11→Scope for now: **Class 11 only** (board CBSE). Build the data layer so other classes can be added later by adding data, not code. If the learner is not on CBSE Class 11, **hide the menu item** (no dead items) and mention the limit in `KNOWN_LIMITS.md`.
+    12→    12→
+    13→    13→## 1. Read first (obey the project's own rules)
+    14→    14→
+    15→    15→Read: `PROGRESS.md`, `docs/ARCHITECTURE.md`, `docs/KNOWN_LIMITS.md`, `docs/INTEGRATIONS.md`, `docs/DESIGN.md`, `design-system/Lumio/MASTER.md`, `docs/ADR/*`, and the master prompt in `upload/` (especially section 0.5 capstone scope and rules R1 to R14).
+    16→    16→
+    17→    17→Code to read and imitate: `src/components/lumio/Shell.tsx` (nav), `LumioApp.tsx` (state owner, `dispatch`), `screens/Planner.tsx`, `screens/Home.tsx`, `screens/Study.tsx`, `src/lib/lumio/{types,events,storage,domain,chapterContent,content,i18n,db}.ts`. If `src/lib/ai/` exists (from the earlier AI work), read it too.
+    18→    18→
+    19→    19→### Facts you must respect
+    20→    20→
+    21→    21→- **Single-route SPA.** Only `/` renders UI. The Syllabus is a new screen id in `LumioApp.tsx` state. **No new routes.**
+    22→    22→- **Event-sourced local-first.** Every mutation goes `dispatch(event)` to pure `applyEvent` to `projectState`. New learner data = new bounded event types handled in `applyEvent`, replay-safe, with defaults added in `defaultState()` and `normalizeState()` (older snapshots must replay). Keep `schema: 2`; add fields with defaults, as earlier chunks did.
+    23→    23→- **Purity rule.** `domain.ts`, `events.ts`, `chapterContent.ts` are pure: no I/O, DOM or clock. Time and timezone are injected. All new logic (progress derivation, priority scoring, plan building, validation) lives in **new pure modules** under `src/lib/lumio/syllabus/`.
+    24→    24→- **Declaration-order rule** in `LumioApp.tsx`: derived values above every `useEffect`.
+    25→    25→- **Nav plumbing today:** `ScreenId` union, `NAV_ICONS`, `navLabel` map and the `NAV` array in `Shell.tsx`. The bottom nav is capped at five items; extra screens live in the sidebar (existing behaviour and note). Add `'syllabus'` to all of these plus `nav.syllabus` in EN, HI and Hinglish.
+    26→    26→- **i18n:** `i18n.ts` has EN/HI/Hinglish with fallback hi to hi-Latn to en. Every new interface string needs all three. **Syllabus topic titles stay English** (same decision as chunk 4B for study content); say so on screen.
+    27→    27→- **Existing helpers to reuse, not duplicate:** `planDayWithOverrides`, `rescheduleOptions`, `subjectForSession`, `subjectPool`, `weakTopics`, `dueCards`, `classGrade`, `SUBJECT_CATALOGUE`, the sanitiser `sanitizeNoteText`.
+    28→    28→- **Rules:** R1 truth in the UI (never invent official links, marks or "official" badges), R3 adapters with fakes for anything external, R4 fail soft, R6 WCAG 2.2 AA, R7 no slop (no emoji icons, use design tokens, themes and density), R8 no stubs, R9 test what you build and report what you could not, R12 complete files. No automated test code is allowed on this platform (ADR 0003): verify by running the app, the agent browser and runnable audit scripts like `scripts/contrast-audit.mjs`. Run `bun run lint` and `bunx tsc --noEmit` (the config ignores build type errors, so run tsc yourself). Never run `bun run build`/`bun run dev` if the platform says not to; read the latest `dev.log` lines after coding.
+    29→    29→
+    30→    30→## 2. Data layer: the syllabus as data
+    31→    31→
+    32→    32→Create `src/lib/lumio/syllabus/` with:
+    33→    33→
+    34→    34→- `types.ts`: `SyllabusSubject`, `SyllabusUnit`, `SyllabusChapter`, `SyllabusTopic`, `TopicId`, `TopicProgress`, etc.
+    35→    35→- `class11.ts`: the full Class 11 dataset from **Appendix A**, typed and **copied faithfully**. Do not paraphrase away topics, and do not add topics that are not in the appendix.
+    36→    36→- `index.ts`: `syllabusFor(classGrade, board)` returning the dataset or `null` (Class 11 + CBSE only for now).
+    37→    37→
+    38→    38→Shape (adapt names to the repo):
+    39→    39→
+    40→    40→```ts
+    41→    41→interface SyllabusSubject {
+    42→    42→  id: 'maths' | 'physics' | 'chemistry' | 'cs' | 'ai';
+    43→    43→  name: string;                 // display name
+    44→    44→  code: string;                 // '041' | '042' | '043' | '083' | '843'
+    45→    45→  catalogueName: string;        // must match an entry of SUBJECT_CATALOGUE
+    46→    46→  theoryMarks: number;          // e.g. 80 for Maths, 70 for others, 40 + 10 for AI (see appendix)
+    47→    47→  units: SyllabusUnit[];
+    48→    48→  practical?: { items: SyllabusTopic[]; scheme: Array<{ label: string; marks: number }> };
+    49→    49→  source: { label: string; note: string };   // provenance, shown on screen
+    50→    50→}
+    51→    51→interface SyllabusUnit { id: string; title: string; marks: number | null; chapters: SyllabusChapter[] }
+    52→    52→interface SyllabusChapter {
+    53→    53→  id: string;
+    54→    54→  title: string;                // the NCERT chapter title (see Appendix A.0)
+    55→    55→  ncertNo?: number;             // chapter number in the NCERT book (absent for CBSE-only items)
+    56→    56→  ncertPart?: 1 | 2;            // NCERT volume (Physics, Chemistry)
+    57→    57→  periods?: number;
+    58→    58→  note?: string;                // short honest note shown under the chapter title
+    59→    59→  topics: SyllabusTopic[];
+    60→    60→}
+    61→    61→interface SyllabusTopic {
+    62→    62→  id: string;                   // STABLE, human-readable: 'phy.c07.t03'. Never renumber.
+    63→    63→  title: string;
+    64→    64→  assessment: 'summative' | 'formative_only' | 'not_in_syllabus_doc';   // see below
+    65→    65→  advanced?: boolean;           // AI 843 "Advanced Learners": not evaluated
+    66→    66→}
+    67→    67→```
+    68→    68→
+    69→    69→Rules for the data:
+    70→    70→
+    71→    71→- **Stable IDs.** IDs are permanent. If a topic's wording changes, keep its id. If a topic is removed in a later syllabus year, keep stored progress (orphaned entries are retained but hidden).
+    72→    72→- **Provenance (R1).** Each subject carries a `source` line: "CBSE curriculum 2026-27, as supplied by the learner" (Physics: "Delhi Directorate of Education support material 2026-27, which reproduces the CBSE syllabus; read from a scanned book, so verify against your school's copy"). Show it on the subject screen. **Do not invent URLs.** Add a note: "Your school may follow a different circular. Check with your teacher."
+    73→    73→- **Formative-only topics.** CBSE marks some topics as "assessed only formatively, not in summative assessments". Keep them in the list with a visible badge **"Formative only"** and a short explanation. Do **not** hide them, and do **not** tell the learner to skip them. The planner just weights them lower (Section 5).
+    74→    74→- **NCERT chapter alignment.** Chapters follow the **NCERT textbook chapter titles and numbers** listed in Appendix A.0, shown as "Ch 7" with the NCERT Part (1 or 2) where the book has two volumes. The CBSE syllabus topics from the supplied documents sit **under** those chapters. Do not invent topics to fill a chapter: where the supplied syllabus lists no topics for an NCERT chapter, show a single row with the chapter title, `assessment: 'not_in_syllabus_doc'`, and the badge **"In NCERT book, not in the syllabus you supplied. Ask your teacher"**. Items that the CBSE document still lists but the rationalised NCERT book no longer has (Maths induction, Chemistry s and p block and gaseous state) stay as `formative_only` chapters with the note "Removed from the rationalised NCERT book; CBSE lists it as formative only".
+    75→    75→- **Do not copy the Google/Vedantu/Byju's links** from any chat or notes into the app. Provenance lines name the document only (R1: no unverified links).
+    76→    76→- **Advanced learners (AI 843).** Items marked advanced get an **"Advanced, not evaluated"** badge and a low planner weight.
+    77→    77→- Add `scripts/syllabus-audit.mjs` (runnable, like `contrast-audit.mjs`) that checks: ids unique and stable-format, every topic has a title, unit marks sum to the subject totals in Appendix A, counts per subject match the appendix (chapter counts: Physics 14, Chemistry 9 NCERT + 2 formative-only, Maths 14 NCERT + 1 formative-only, Computer Science 11, AI 5 Part A units + 8 Part B units), and each `catalogueName` exists in `SUBJECT_CATALOGUE`. Report the output.
+    78→    78→
+    79→    79→## 3. State and events
+    80→    80→
+    81→    81→Add to `LumioState` (with defaults and `normalizeState` handling):
+    82→    82→
+    83→    83→```ts
+    84→    84→syllabus: {
+    85→    85→  topics: Record<TopicId, TopicProgress>;
+    86→    86→  plans: Record<string /* yyyy-mm-dd */, AcceptedPlan>;
+    87→    87→  hiddenSubjects: string[];            // subject ids the learner hid
+    88→    88→};
+    89→    89→interface TopicProgress {
+    90→    90→  progress: 'not_started' | 'in_progress' | 'completed';
+    91→    91→  confidence: 'confident' | 'unsure' | null;   // only meaningful when completed
+    92→    92→  flags: SyllabusFlag[];               // see below, max 8, deduped
+    93→    93→  note: string;                        // sanitised plain text, max 280 chars
+    94→    94→  updatedOn: string;                   // learner-local yyyy-mm-dd
+    95→    95→  completedOn?: string;                // set when progress becomes 'completed'
+    96→    96→  lastReviewedOn?: string;             // set whenever the learner marks it confident again or revises
+    97→    97→}
+    98→    98→type SyllabusFlag =
+    99→    99→  | 'lacks_practice'    // "Needs more question practice"
+   100→   100→  | 'concept_unclear'   // "Concept not clear yet"
+   101→   101→  | 'formulas'          // "Formulas not memorised"
+   102→   102→  | 'careless'          // "Careless mistakes"
+   103→   103→  | 'speed'             // "Too slow in problems"
+   104→   104→  | 'needs_revision'    // "Needs revision"
+   105→   105→  | 'needs_help'        // "Need to ask a teacher"
+   106→   106→  | 'practical_pending';// "Practical not done"
+   107→   107→```
+   108→   108→
+   109→   109→**The marks the learner sees** (derive from `progress` + `confidence`; show icon + text, never colour alone):
+   110→   110→
+   111→   111→1. **Not started**
+   112→   112→2. **In progress**
+   113→   113→3. **Completed** (done, not yet rated)
+   114→   114→4. **Completed and confident**
+   115→   115→5. **Completed but not confident**
+   116→   116→
+   117→   117→If you interpret the request differently (for example "Confident" as a separate state from "Completed"), record the assumption in `docs/ASSUMPTIONS.md`.
+   118→   118→
+   119→   119→Events (pure reducer cases, replay-safe, unknown topic ids ignored, last write wins, dates injected by the caller, **never** the clock):
+   120→   120→
+   121→   121→- `syllabus-topic-updated { topicId, patch: Partial<Pick<TopicProgress,'progress'|'confidence'|'flags'|'note'>>, date }`. Enforce: confidence is cleared unless `progress==='completed'`; `completedOn` set on first completion; note sanitised with the existing sanitiser and clamped to 280 chars; flags validated against the union.
+   122→   122→- `syllabus-topics-bulk { topicIds: TopicId[], patch, date }` (max 60 ids): for "mark this chapter or unit".
+   123→   123→- `syllabus-plan-accepted { date, plan: AcceptedPlan }` and `syllabus-plan-cleared { date }`.
+   124→   124→- `syllabus-subject-visibility { subjectId, hidden }`.
+   125→   125→
+   126→   126→**Undo:** the log is append-only, so implement Undo as a **compensating event** carrying the previous values (kept in memory for the last action), shown in a toast for about 8 seconds, and available for bulk actions.
+   127→   127→
+   128→   128→**No XP, no streak days, no achievements, no mastery changes** from syllabus marks. They are self-reported and would be trivially farmable. Say so in one calm line on the screen ("Your own checklist. It never earns XP, so be honest with yourself"). Existing quiz results may be **shown as a hint** next to a topic if a clear mapping exists (do not build a fragile mapping; skip if it is not clean), and a hint may *suggest* "mark as not confident?" but must never change a mark silently.
+   129→   129→
+   130→   130→Include `syllabus` in export and import (R13), the `bootstrap` snapshot, and `resetAllStorage`. Update `docs/ARCHITECTURE.md`'s module map and add a short ADR if you make a non-obvious decision.
+   131→   131→
+   132→   132→## 4. The screen (all inside the existing single route)
+   133→   133→
+   134→   134→**Sidebar entry:** `Syllabus` (lucide `ListChecks`, or `BookMarked` if it fits the design better), placed after Study. Reachable on desktop sidebar and in the collapsed rail with `sr-only` label; not part of the five-item bottom bar (existing note covers this). Hidden for non-supported class and board.
+   135→   135→
+   136→   136→**Overview (top of screen):**
+   137→   137→- Overall completion ring or bar with a **text value** ("Completed 34 of 212 topics") and a one-line honest framing. Use the project's chart rules (`charts.csv` rows cited in DESIGN.md; keep a text/table alternative for any chart; no chart with fewer than four data points).
+   138→   138→- A card per subject: name and code, a **segmented progress bar** of the five states (each segment with a pattern or label, not only colour), counts, and "needs attention" count (completed-but-not-confident plus any flagged topic). Tapping opens the subject.
+   139→   139→- **Today's plan** card (Section 5) pinned above the subject cards.
+   140→   140→- Controls: "Hide subjects I don't take" (stores `hiddenSubjects`), "Include formative-only topics in counts" (default on).
+   141→   141→
+   142→   142→**Subject screen:**
+   143→   143→- Header: subject, code, theory marks, source line, formative/advanced badge legend.
+   144→   144→- Tabs: **Theory** and **Practical** (practical items come from the appendix; each is trackable like a topic, with `practical_pending` available).
+   145→   145→- Theory is an **accordion by unit, then chapter, then topic** (shadcn `accordion`). Unit header shows the CBSE marks (or marks band) and a mini progress summary. Chapter header has **"Mark whole chapter"** (menu: not started, in progress, completed) with a confirm for downgrades and an Undo toast.
+   146→   146→- **Topic row:** title, badges, a **5-state selector** (a `radio-group`/segmented control; keyboard-complete, 44 px targets), a **flags popover** (multi-select chips with plain-language labels), and a **note** editor (dialog or sheet, 280-char counter, plain text). Show a small note preview and the flag chips inline. Saving is instant (dispatch) with an `aria-live` "Saved" message; no spinners.
+   147→   147→- **Filters and search:** status, flag ("lacks question practice", etc.), "has a note", "formative only", plus text search; sort by syllabus order or by planner priority. A "Needs attention" quick filter.
+   148→   148→- Empty, loading (hydration), and error states are calm and specific.
+   149→   149→
+   150→   150→**Quality bar:** morning/evening/night themes; school and adult density profiles; 390 px mobile with no horizontal scroll (rows become stacked cards); visible focus; reduced motion respected; screen-reader names on every control ("Mark Kepler's laws as completed, not confident"); contrast audit still passes (extend `scripts/contrast-audit.mjs` for any new colour pairing). Hindi and Hinglish strings complete.
+   151→   151→
+   152→   152→## 5. Today's plan
+   153→   153→
+   154→   154→### 5.1 The deterministic planner (must work with no AI, no account, no network)
+   155→   155→
+   156→   156→Pure module `src/lib/lumio/syllabus/planner.ts`:
+   157→   157→
+   158→   158→```ts
+   159→   159→buildSyllabusPlan(input: {
+   160→   160→  today: string;                       // learner-local yyyy-mm-dd (injected)
+   161→   161→  dayIndex: number;
+   162→   162→  slots: SessionSlot[];                // from planDayWithOverrides for today
+   163→   163→  subjects: SyllabusSubject[];         // visible subjects the learner takes (subjectPool ∩ visible)
+   164→   164→  compSub?: string;                    // complementary subject pairing
+   165→   165→  progress: Record<TopicId, TopicProgress>;
+   166→   166→  examDates: Record<subjectId, string | undefined>;   // from profile (nextExamDate etc.), may be empty
+   167→   167→  dueCardsCount?: number;
+   168→   168→}): PlanItem[]
+   169→   169→```
+   170→   170→
+   171→   171→- **Subjects per slot** come from the existing `subjectForSession` (keep complementary pairing).
+   172→   172→- **Topic priority score** (starting values; define them as named constants, document them in `docs/ARCHITECTURE.md`, and keep them easy to tune):
+   173→   173→  - Base by state: completed-but-not-confident **40**; completed with `lacks_practice` **35**; in progress **30**; not started **20** plus a small bonus for being the next topic in syllabus order (so the learner does not skip around); completed, unrated **15**; completed and confident **0**.
+   174→   174→  - Flag bonuses: `concept_unclear` +12, `lacks_practice` +10, `needs_revision` +8, `formulas` +6, `needs_help` +6, `speed` +5, `careless` +4.
+   175→   175→  - Marks weight: up to **+30** scaled by the unit's share of the subject's marks.
+   176→   176→  - Staleness: a completed-and-confident topic not reviewed for 21+ days gains up to **+15** (gentle spaced revision, so "confident" does not mean "forgotten").
+   177→   177→  - Exam urgency: if a subject's exam is within 30 days, scale the marks weight by 1.5.
+   178→   178→  - `formative_only` topics: multiply by **0.4**. `advanced` topics: multiply by **0.2**. Never exclude them.
+   179→   179→  - Anything already planned or touched today is skipped.
+   180→   180→- **Activity per item** is derived, not invented: not started or in progress means *Learn*; flagged `lacks_practice` means *Practise questions*; completed-but-not-confident or `needs_revision` means *Revise*; stale confident means *Quick recall*.
+   181→   181→- **Fit the slots:** estimate minutes per activity (named constants, for example Learn 35, Practise 25, Revise 15, Recall 10), fill each slot's length without overflowing, allow several short items per long slot, and never produce more than the slot count allows. If there are no slots today, return an honest empty plan ("No study sessions fit today. Open the Planner to adjust.").
+   182→   182→- Every item carries machine-readable **reason codes** (`NOT_CONFIDENT`, `LACKS_PRACTICE`, `HIGH_MARKS_UNIT`, `EXAM_SOON`, `STALE_REVISION`, `NEXT_IN_ORDER`, `IN_PROGRESS`, `CONCEPT_UNCLEAR`) rendered through i18n templates, so the non-AI plan is fully explainable. **Same inputs must always give the same plan** (deterministic tie-breaks by syllabus order).
+   183→   183→
+   184→   184→### 5.2 The AI refinement (optional, behind the existing gateway)
+   185→   185→
+   186→   186→If the AI gateway exists, add a feature `syllabus-day-coach` following its conventions (prompt file `prompts/syllabus-day-coach.v1.ts`, Zod schemas, `completeJson` with **one repair retry**, budgets, `ai_generated` labelling, the "AI" marker, "AI can make mistakes" line, a Report control). If the gateway does not exist yet, create only the `LlmGateway` interface and the **fake adapter** now, with the real adapter documented as future work in `INTEGRATIONS.md` (status `FAKE-ONLY`).
+   187→   187→
+   188→   188→- **Input to the model (privacy):** only the deterministic plan, the candidate topics (public syllabus ids and titles), their status and flag **enums**, unit mark shares, exam-proximity buckets (not dates), today's slot lengths, and the learner's **band**. **Never** send the name, email, user id, free-text notes (unless the learner ticks "Include my notes for this plan", off by default, sanitised and delimited as data), or raw dates of birth.
+   189→   189→- **Task:** reorder and re-balance the candidate items, pick the activity per item from the allowed enum, and write a **short encouraging reason (max 160 chars) per item** plus a one-sentence day summary, in the learner's language (English, Hindi, Hinglish), age-appropriate tone, never guilt-tripping.
+   190→   190→- **Output schema (Zod):** `{ summary, items: [{ slotIndex, topicIds[], activity, minutes, reason }] }`.
+   191→   191→- **Validation (hard rules, same module as the planner):** every `topicId` must exist in the candidate list; no duplicates; item count and total minutes must fit today's slots; subject must match the slot's subject; activity must be in the enum; reasons are length-capped and passed through the safe-Markdown renderer. **Any violation means discard the AI plan and show the deterministic plan** with a calm note ("Showing your standard plan"). The AI can never add topics, change marks or invent syllabus content.
+   192→   192→- **Degradation:** no key, signed out, over budget, provider down, invalid JSON after one repair: the deterministic plan shows with a calm reason; every non-AI path unchanged. The "Refine with AI" button appears only when the capability flag says AI is available and the learner has opted in.
+   193→   193→- **Never** claim board alignment beyond the syllabus data. The model has no tools and cannot fetch URLs.
+   194→   194→
+   195→   195→### 5.3 Accepting a plan
+   196→   196→
+   197→   197→The learner can **Accept** (dispatches `syllabus-plan-accepted`), tweak (remove an item, swap an item for the next-best), or dismiss. An accepted plan appears as **"Today's focus"** on Home and under each session in the Planner. Ticking a topic done from the plan card uses the same `syllabus-topic-updated` event and prompts a gentle "How confident do you feel?" choice (confident, not confident, skip). Existing session XP rules are unchanged; plan acceptance itself gives no XP.
+   198→   198→
+   199→   199→Optional (only if time remains and Phase 2 of the AI work exists): for a topic flagged `lacks_practice`, an "Ask for practice questions" action that opens the existing beta practice generator for that topic, with its existing labels and no-XP rule.
+   200→   200→
+   201→   201→## 6. Verification (required; report evidence)
+   202→   202→
+   203→   203→Use the agent browser, `curl` where relevant, and the audit scripts. At minimum:
+   204→   204→
+   205→   205→1. The audit script passes: unique ids, per-subject topic counts and marks sums match Appendix A.
+   206→   206→2. A Class 11 CBSE learner sees the menu item; a different class or board does not, and nothing is broken.
+   207→   207→3. Mark topics in all five states, set flags, write a note (including HTML-like text, which must render as plain text), reload: everything persists through the IndexedDB event log; clear localStorage and reload: replay restores it.
+   208→   208→4. Bulk-mark a chapter, then Undo; downgrade confirmation works.
+   209→   209→5. Export, wipe, import round trip preserves all syllabus data; an older snapshot without `syllabus` loads with defaults.
+   210→   210→6. Planner determinism: identical inputs give identical plans; "completed but not confident" and `lacks_practice` topics rank above fresh topics; formative-only and advanced topics rank lower but still appear in the list; an empty-slot day gives the honest empty state.
+   211→   211→7. AI with the **fake adapter**: a refined plan renders with the AI label and Report control; an **invalid** AI plan (invented topic id, too many minutes, wrong subject) is rejected and the deterministic plan shows; AI off, signed out and over budget states are calm; the plan request contains **no** name, email, notes or user id (inspect the captured prompt).
+   212→   212→8. Syllabus marks grant **no XP** (XP total unchanged), no streak day, no achievement.
+   213→   213→9. Themes (morning, evening, night), school and adult density, 390 px mobile, keyboard-only use, screen-reader labels, reduced motion, Hindi and Hinglish; contrast audit passes.
+   214→   214→10. `bun run lint` and `bunx tsc --noEmit` clean for project code; latest `dev.log` has no errors; zero console errors in the browser.
+   215→   215→
+   216→   216→## 7. Documentation and reporting
+   217→   217→
+   218→   218→Update `PROGRESS.md` (new chunk section: files built, decisions, verification, open issues), `docs/ARCHITECTURE.md` (module map, scoring constants), `docs/ASSUMPTIONS.md`, `docs/KNOWN_LIMITS.md`, `docs/PARITY.md`, `docs/INTEGRATIONS.md` (LLM row if touched), and add screenshots to `docs/shots/` (overview, a subject screen, topic editor, plan card in at least two themes and one mobile width). Work in vertical slices: (A) data + audit script, (B) state and events, (C) nav + overview + subject screens, (D) deterministic planner + plan card + Home/Planner surfaces, (E) AI refinement, (F) docs and sweep. **Final report:** what you built, what you verified and how, what you could not verify and why, assumptions, deviations, and a manual test sheet. Be direct about gaps.
+   219→   219→
+   220→   220→## 8. Definition of done
+   221→   221→
+   222→   222→- [ ] "Syllabus" appears in the sidebar for CBSE Class 11 and shows all five subjects with every topic from Appendix A, including practicals, formative-only and advanced badges.
+   223→   223→- [ ] Every topic supports the five marks, flags (including "needs more question practice") and a short note; bulk actions and Undo work; all data survives reload, export and import.
+   224→   224→- [ ] Today's plan works with no AI, is deterministic and explainable, and fits today's sessions.
+   225→   225→- [ ] AI refinement is optional, validated, privacy-scrubbed, labelled, budgeted and falls back cleanly.
+   226→   226→- [ ] No XP, streak or achievement effects; honest provenance on screen; no invented links.
+   227→   227→- [ ] EN, HI, Hinglish complete; WCAG 2.2 AA basics, themes, densities and mobile checked; lint and tsc clean; docs, ADR/assumptions and screenshots updated.
+   228→   228→
+   229→   229→---
+   230→   230→
+   231→   231→# Appendix A: Class 11 syllabus data (CBSE 2026-27)
+   232→   232→
+   233→   233→Copy this into `class11.ts`. IDs: `maths`, `physics`, `chemistry`, `cs`, `ai`; chapter ids `c01`..; topic ids `t01`..; for example `phy.c07.t03`. Chapter order below is the **NCERT order** and defines "next in order". "Formative only" = the CBSE document says the topic is "assessed only formatively ... without adding to summative assessments".
+   234→   234→
+   235→   235→### A.0 NCERT chapter map (the chapter spine for every subject)
+   236→   236→
+   237→   237→**Physics (14 chapters, 2 parts).** Part 1: 1 Units and Measurements; 2 Motion in a Straight Line; 3 Motion in a Plane; 4 Laws of Motion; 5 Work, Energy and Power; 6 System of Particles and Rotational Motion; 7 Gravitation. Part 2: 8 Mechanical Properties of Solids; 9 Mechanical Properties of Fluids; 10 Thermal Properties of Matter; 11 Thermodynamics; 12 Kinetic Theory; 13 Oscillations; 14 Waves.
+   238→   238→
+   239→   239→**Chemistry (9 chapters, 2 parts).** Part 1: 1 Some Basic Concepts of Chemistry; 2 Structure of Atom; 3 Classification of Elements and Periodicity in Properties; 4 Chemical Bonding and Molecular Structure; 5 Chemical Thermodynamics; 6 Equilibrium. Part 2: 7 Redox Reactions; 8 Organic Chemistry: Some Basic Principles and Techniques; 9 Hydrocarbons. (The rationalised book dropped States of Matter, Hydrogen, s-Block, p-Block and Environmental Chemistry; the two CBSE formative-only topics in A.3 are tracked separately.)
+   240→   240→
+   241→   241→**Mathematics (14 chapters).** 1 Sets; 2 Relations and Functions; 3 Trigonometric Functions; 4 Complex Numbers and Quadratic Equations; 5 Linear Inequalities; 6 Permutations and Combinations; 7 Binomial Theorem; 8 Sequences and Series; 9 Straight Lines; 10 Conic Sections; 11 Introduction to Three Dimensional Geometry; 12 Limits and Derivatives; 13 Statistics; 14 Probability. (Mathematical Induction and Mathematical Reasoning were dropped from the rationalised book; CBSE still lists Induction as formative only, see A.1.)
+   242→   242→
+   243→   243→**Computer Science (11 chapters).** 1 Computer System; 2 Encoding Schemes and Number System; 3 Emerging Trends; 4 Introduction to Problem Solving; 5 Getting Started with Python; 6 Flow of Control; 7 Functions; 8 Strings; 9 Lists; 10 Tuples and Dictionaries; 11 Societal Impact. (Mapping of the CBSE topics onto these chapters is in A.4.)
+   244→   244→
+   245→   245→**Artificial Intelligence (13 units, no NCERT textbook).** CBSE publishes study handbooks and facilitator guides instead. Part A Employability Skills (5 units): Communication Skills III; Self-Management Skills III; ICT Skills III; Entrepreneurial Skills III; Green Skills III. Part B Subject-specific Skills (8 units): see A.5. Show "No NCERT textbook; CBSE handbook" as the source line for AI.
+   246→   246→
+   247→   247→## A.1 Mathematics (041)
+   248→   248→
+   249→   249→Theory 80 marks (3 hours) + Internal assessment 20 (periodic tests 10, activities 10). Unit marks: **I Sets and Functions 23; II Algebra 25; III Coordinate Geometry 12; IV Calculus 8; V Statistics and Probability 12** (sum 80). The document gives no chapter-wise weightage.
+   250→   250→
+   251→   251→Chapter numbers follow NCERT (see A.0). Under each chapter the topics are the CBSE 2026-27 topics.
+   252→   252→
+   253→   253→**Unit I: Sets and Functions (23)**
+   254→   254→- *Ch 1 Sets:* sets and their representations; empty set; finite and infinite sets; equal sets; subsets; subsets of real numbers, especially intervals (with notation); universal set; Venn diagrams; union and intersection; difference of sets; complement and its properties. *Formative only:* practical problems on union and intersection of two sets.
+   255→   255→- *Ch 2 Relations and Functions:* ordered pairs; Cartesian product and number of elements; Cartesian product of the reals with itself (up to R×R×R); relation (definition, pictorial diagrams, domain, co-domain, range); function as a special relation (pictorial representation, domain, co-domain, range); real-valued functions and their graphs: constant, identity, polynomial, rational, modulus, signum, exponential, logarithmic, greatest integer; sum, difference, product and quotient of functions. *Formative only:* composition of functions.
+   256→   256→- *Ch 3 Trigonometric Functions:* positive and negative angles; radians and degrees and conversion; trigonometric functions via the unit circle; identity sin²x + cos²x = 1; signs of trigonometric functions; domain, range and graphs; sin(x±y) and cos(x±y) and simple applications; tan(x±y) and cot(x±y); sum-to-product and product identities (sin α ± sin β, cos α + cos β, cos α − cos β); identities for 2x and 3x (sin, cos, tan). *Formative only:* general solution of trigonometric equations of the type sin y = sin a, cos y = cos a, tan y = tan a.
+   257→   257→
+   258→   258→**Unit II: Algebra (25)**
+   259→   259→- *Principle of Mathematical Induction (CBSE-only, formative only; removed from the rationalised NCERT book; no NCERT chapter number):* process of proof by induction; natural numbers as the least inductive subset of the reals; the principle and simple applications.
+   260→   260→- *Ch 4 Complex Numbers and Quadratic Equations:* need for complex numbers (especially √−1); algebraic properties; Argand plane. *Formative only:* polar representation; statement of the Fundamental Theorem of Algebra; solving quadratics with real coefficients in the complex number system.
+   261→   261→- *Ch 5 Linear Inequalities:* algebraic solutions of linear inequalities in one variable; representation on the number line. *Formative only:* graphical solution of linear inequalities in two variables; graphical solution of a system of such inequalities.
+   262→   262→- *Ch 6 Permutations and Combinations:* fundamental principle of counting; factorial n; permutations and combinations; derivation of formulae for nPr and nCr and their connections; simple applications.
+   263→   263→- *Ch 7 Binomial Theorem:* historical perspective; statement and proof for positive integral indices; Pascal's triangle; simple applications. *Formative only:* general term and middle term.
+   264→   264→- *Ch 8 Sequences and Series:* sequence and series; arithmetic mean (A.M.); geometric progression (G.P.), general term, sum of n terms, infinite G.P. and its sum; geometric mean (G.M.); relation between A.M. and G.M. *Formative only:* special sums Σk, Σk², Σk³.
+   265→   265→
+   266→   266→**Unit III: Coordinate Geometry (12)**
+   267→   267→- *Ch 9 Straight Lines:* brief recall of 2-D geometry; slope and angle between two lines; forms of equation (parallel to axis, point-slope, slope-intercept, two-point, intercept); distance of a point from a line. *Formative only:* normal form; general equation of a line.
+   268→   268→- *Ch 10 Conic Sections:* sections of a cone (circle, ellipse, parabola, hyperbola; a point, a straight line and a pair of intersecting lines as degenerate cases); standard equations and simple properties of parabola, ellipse and hyperbola; standard equation of a circle.
+   269→   269→- *Ch 11 Introduction to Three Dimensional Geometry:* coordinate axes and planes in three dimensions; coordinates of a point; distance between two points. *Formative only:* section formula.
+   270→   270→
+   271→   271→**Unit IV: Calculus (8)**
+   272→   272→- *Ch 12 Limits and Derivatives:* derivative as rate of change (distance function) and geometrically; intuitive idea of limit; limits of polynomial, rational, trigonometric, exponential and logarithmic functions; definition of derivative and its relation to the slope of the tangent; derivatives of sum, difference, product and quotient of polynomial and trigonometric functions. *Formative only:* derivatives of composite functions (chain rule).
+   273→   273→
+   274→   274→**Unit V: Statistics and Probability (12)**
+   275→   275→- *Ch 13 Statistics:* measures of dispersion: range, mean deviation, variance and standard deviation of ungrouped and grouped data.
+   276→   276→- *Ch 14 Probability:* events and occurrence of events; "not", "and", "or" events; exhaustive events; mutually exclusive events; axiomatic (set-theoretic) probability and connections with earlier classes; probability of an event, and of "not", "and", "or" events. *Formative only:* random experiments, outcomes, sample space (set representation).
+   277→   277→
+   278→   278→**Internal assessment items (trackable as "Practical/IA"):** Periodic tests (best 2 of 3): 10 marks. Mathematics activities (10 activities from the NCERT Lab Manual: record and activity work 5, year-end activity test 3, viva 2): 10 marks.
+   279→   279→
+   280→   280→## A.2 Physics (042)
+   281→   281→
+   282→   282→Theory 70 marks (3 hours) + Practical 30. Unit marks are given for **groups**: **Units I to III together 23; Units IV to VI together 17; Units VII to IX together 20; Unit X 10** (sum 70). Periods (total 160): I 8; II 24; III 14; IV 14; V 18; VI 12; VII 24; VIII 12; IX 8; X 26. Store group marks on the first unit of each group and `marks: null` on the others, with a `marksGroup` label, and have the UI show "23 marks (Units I to III)".
+   283→   283→*Chapters 1 to 7 are NCERT Part 1; chapters 8 to 14 are Part 2. Store `ncertPart` on every chapter.* *Source note:* this was read from a scanned support-material book (Delhi Directorate of Education, 2026-27). Mark "verify against your school's copy" on screen.
+   284→   284→
+   285→   285→**Unit I: Physical World and Measurement** (NCERT Part 1)
+   286→   286→- *Ch 1 Units and Measurements:* need for measurement; units and systems of units; SI units; fundamental and derived units; significant figures; determining the uncertainty in a result; dimensions of physical quantities; dimensional analysis and its applications.
+   287→   287→
+   288→   288→**Unit II: Kinematics**
+   289→   289→- *Ch 2 Motion in a Straight Line:* frame of reference; motion in a straight line; elementary differentiation and integration for describing motion; uniform and non-uniform motion; average speed and average velocity; instantaneous velocity; uniformly accelerated motion; velocity-time and position-time graphs; relations for uniformly accelerated motion (graphical and calculus treatment).
+   290→   290→- *Ch 3 Motion in a Plane:* scalar and vector quantities; position and displacement vectors; equality of vectors; multiplication of a vector by a real number; addition and subtraction of vectors; unit vector; resolution of a vector in a plane, rectangular components; scalar and vector product of vectors; motion in a plane with uniform velocity and uniform acceleration; projectile motion; uniform circular motion.
+   291→   291→
+   292→   292→**Unit III: Laws of Motion**
+   293→   293→- *Ch 4 Laws of Motion:* intuitive concept of force; inertia; Newton's first law; momentum and Newton's second law; impulse; Newton's third law; law of conservation of linear momentum and its applications; equilibrium of concurrent forces; static and kinetic friction, rolling friction, lubrication; dynamics of uniform circular motion and centripetal force; examples of circular motion (vehicle on a level circular road, vehicle on a banked road).
+   294→   294→
+   295→   295→**Unit IV: Work, Energy and Power**
+   296→   296→- *Ch 5 Work, Energy and Power:* work done by a constant force and by a variable force; kinetic energy; work-energy theorem; power; notion of potential energy; potential energy of a spring; conservative and non-conservative forces; motion in a vertical circle; elastic and inelastic collisions in one and two dimensions.
+   297→   297→
+   298→   298→**Unit V: Motion of System of Particles and Rigid Body**
+   299→   299→- *Ch 6 System of Particles and Rotational Motion:* centre of mass of a two-particle system; momentum conservation and centre-of-mass motion; centre of mass of a rigid body and of a uniform rod; moment of a force, torque; angular momentum, law of conservation of angular momentum and its applications; equilibrium of rigid bodies; rigid-body rotation and equations of rotational motion; comparison of linear and rotational motions; moment of inertia and radius of gyration; values of moments of inertia for simple geometrical objects (no derivation).
+   300→   300→
+   301→   301→**Unit VI: Gravitation**
+   302→   302→- *Ch 7 Gravitation:* Kepler's laws of planetary motion; universal law of gravitation; acceleration due to gravity and its variation with altitude and depth; gravitational potential energy and gravitational potential; escape speed; orbital velocity of a satellite; energy of an orbiting satellite.
+   303→   303→
+   304→   304→**Unit VII: Properties of Bulk Matter**
+   305→   305→- *(NCERT Part 2 begins here)* *Ch 8 Mechanical Properties of Solids:* elasticity; stress-strain relationship; Hooke's law; Young's modulus; bulk modulus; shear modulus of rigidity (qualitative idea only); Poisson's ratio; elastic energy; applications of elastic behaviour of materials (qualitative idea only).
+   306→   306→- *Ch 9 Mechanical Properties of Fluids:* pressure due to a fluid column; Pascal's law and its applications (hydraulic lift and brakes); effect of gravity on fluid pressure; viscosity; Stokes' law; terminal velocity; streamline and turbulent flow; critical velocity; Bernoulli's theorem and simple applications (Torricelli's law, dynamic lift); surface energy and surface tension; angle of contact; excess pressure across a curved surface; applications of surface tension to drops, bubbles and capillary rise.
+   307→   307→- *Ch 10 Thermal Properties of Matter:* heat and temperature; thermal expansion of solids, liquids and gases; anomalous expansion of water; specific heat capacity (Cp, Cv); calorimetry; change of state; latent heat capacity; heat transfer (conduction, convection, radiation); thermal conductivity; qualitative ideas of blackbody radiation, Wien's displacement law, Stefan's law.
+   308→   308→
+   309→   309→**Unit VIII: Thermodynamics**
+   310→   310→- *Ch 11 Thermodynamics:* thermal equilibrium and definition of temperature; zeroth law; heat, work and internal energy; first law; second law; thermodynamic state variables and equation of state; change of condition of a gaseous state; isothermal, adiabatic, reversible, irreversible and cyclic processes.
+   311→   311→
+   312→   312→**Unit IX: Behaviour of Perfect Gases and Kinetic Theory of Gases**
+   313→   313→- *Ch 12 Kinetic Theory:* equation of state of a perfect gas; work done in compressing a gas; kinetic theory of gases (assumptions, concept of pressure); kinetic interpretation of temperature; rms speed of gas molecules; degrees of freedom; law of equipartition of energy (statement only) and application to specific heat capacities of gases; concept of mean free path; Avogadro's number.
+   314→   314→
+   315→   315→**Unit X: Oscillations and Waves**
+   316→   316→- *Ch 13 Oscillations:* periodic motion (time period, frequency, displacement as a function of time); periodic functions; simple harmonic motion (SHM) and its equations; uniform circular motion and SHM; phase; oscillations of a loaded spring (restoring force, force constant); energy in SHM (kinetic and potential); simple pendulum and derivation of its time period.
+   317→   317→- *Ch 14 Waves:* wave motion; transverse and longitudinal waves; speed of a travelling wave; displacement relation for a progressive wave; principle of superposition; reflection of waves; standing waves in strings and organ pipes; fundamental mode and harmonics; beats.
+   318→   318→
+   319→   319→*Practical (30 marks):* the practical list was **not captured** from the supplied book. Leave Physics `practical` empty and add a "Practical list not added yet" note in `KNOWN_LIMITS.md` rather than inventing experiments.
+   320→   320→
+   321→   321→## A.3 Chemistry (043)
+   322→   322→
+   323→   323→Theory 70 marks (3 hours) + Practical 30. Unit marks: **1 Some Basic Concepts of Chemistry 7; 2 Structure of Atom 9; 3 Classification of Elements and Periodicity in Properties 6; 4 Chemical Bonding and Molecular Structure 7; 5 Chemical Thermodynamics 9; 6 Equilibrium 7; 7 Redox Reactions 4; 8 Organic Chemistry: Some Basic Principles and Techniques 11; 9 Hydrocarbons 10** (sum 70).
+   324→   324→
+   325→   325→Chapters 1 to 6 are NCERT Part 1; chapters 7 to 9 are Part 2. Store `ncertPart` on every chapter.
+   326→   326→
+   327→   327→1. **Some Basic Concepts of Chemistry (7):** importance of chemistry; nature of matter; properties of matter and their measurement; uncertainty in measurement; laws of chemical combination; Dalton's atomic theory; atomic and molecular masses; mole concept and molar masses; percentage composition; stoichiometry and stoichiometric calculations.
+   328→   328→2. **Structure of Atom (9):** discovery of sub-atomic particles; atomic models; developments leading to Bohr's model; Bohr's model for the hydrogen atom; towards the quantum mechanical model; quantum mechanical model of the atom.
+   329→   329→3. **Classification of Elements and Periodicity in Properties (6):** why we need to classify elements; genesis of periodic classification; modern periodic law and the present form of the periodic table; nomenclature of elements with atomic number > 100; electronic configuration and the periodic table; electronic configuration and types of elements (s-, p-, d-, f-blocks); periodic trends in properties of elements.
+   330→   330→4. **Chemical Bonding and Molecular Structure (7):** Kossel-Lewis approach; ionic or electrovalent bond; bond parameters; VSEPR theory; valence bond theory; hybridisation; molecular orbital theory; bonding in some homonuclear diatomic molecules; hydrogen bonding.
+   331→   331→5. **Chemical Thermodynamics (9):** thermodynamic terms; applications; measurement of ΔU and ΔH (calorimetry); enthalpy change and ΔH of a reaction (reaction enthalpy); enthalpies for different types of reactions; spontaneity; Gibbs energy change and equilibrium.
+   332→   332→6. **Equilibrium (7):** equilibrium in physical processes; equilibrium in chemical processes (dynamic equilibrium); law of chemical equilibrium and equilibrium constant; homogeneous equilibria; heterogeneous equilibria; applications of equilibrium constants; relationship between K, reaction quotient Q and Gibbs energy; factors affecting equilibria; ionic equilibrium in solution; acids, bases and salts; ionisation of acids and bases; buffer solutions; solubility equilibria of sparingly soluble salts.
+   333→   333→7. **Redox Reactions (4):** classical idea of redox reactions (oxidation and reduction); redox reactions in terms of electron transfer; oxidation number; redox reactions and electrode processes.
+   334→   334→8. **Organic Chemistry: Some Basic Principles and Techniques (11):** general introduction; tetravalence of carbon and shapes of organic compounds; structural representations; classification; nomenclature; isomerism; fundamental concepts in organic reaction mechanism; methods of purification; qualitative analysis; quantitative analysis.
+   335→   335→9. **Hydrocarbons (10):** classification; alkanes; alkenes; alkynes; aromatic hydrocarbons; carcinogenicity and toxicity.
+   336→   336→10. **Formative only (CBSE-only; removed from the rationalised NCERT book; no NCERT chapter number): s and p Block Elements:** electronic configuration; atomic and ionic radii; ionisation enthalpy; hydration enthalpy; general trends in physical and chemical properties across periods and down groups of s and p block elements; unique behaviour of the first element in each group.
+   337→   337→11. **Formative only (CBSE-only; removed from the rationalised NCERT book; no NCERT chapter number): The Gaseous State:** qualitative treatment of gas laws; ideal gas equation and deviations from it.
+   338→   338→
+   339→   339→*Practical (30 marks): Volumetric analysis 8; Salt analysis 8; Content-based experiment 6; Project work 4; Class record and viva 4.* Practical items:
+   340→   340→- *Basic laboratory techniques:* cutting glass tube and glass rod; bending a glass tube; drawing out a glass jet; boring a cork.
+   341→   341→- *Characterisation and purification:* melting point of an organic compound; boiling point of an organic compound; crystallisation of an impure sample (alum, copper sulphate or benzoic acid).
+   342→   342→- *Experiments based on pH:* one of (pH of fruit juices and known solutions using pH paper or universal indicator; comparing pH of strong and weak acids of the same concentration; pH change in titration of a strong base using universal indicator); pH change by common ion in weak acids and weak bases.
+   343→   343→- *Chemical equilibrium (any one):* shift in equilibrium between ferric and thiocyanate ions; shift in equilibrium between [Co(H2O)6]2+ and chloride ions.
+   344→   344→- *Quantitative estimation:* using a mechanical or electronic balance; preparation of standard oxalic acid solution; strength of NaOH solution by titration against standard oxalic acid; preparation of standard sodium carbonate solution; strength of HCl solution by titration against standard sodium carbonate.
+   345→   345→- *Qualitative analysis:* one anion and one cation in a given salt (cations: Pb2+, Cu2+, Al3+, Fe3+, Mn2+, Ni2+, Zn2+, Co2+, Ca2+, Sr2+, Ba2+, Mg2+, NH4+; anions: CO3 2−, S2−, SO3 2−, NO3−, NO2−, Cl−, Br−, I−, SO4 2−, PO4 3−, CH3COO−; insoluble salts excluded); detection of nitrogen, sulphur and chlorine in organic compounds.
+   346→   346→- *Project work:* a scientific investigation of about 10 periods, with teacher approval.
+   347→   347→
+   348→   348→## A.4 Computer Science (083)
+   349→   349→
+   350→   350→Theory 70 marks + Practical 30. CBSE unit marks: **Unit 1 Computer Systems and Organisation 10; Unit 2 Computational Thinking and Programming-1 45; Unit 3 Society, Law and Ethics 15** (sum 70). The tracker follows the **11 NCERT chapters**; each chapter is filed under the CBSE unit it belongs to, and unit marks are shown on the unit header. *The chapter-to-topic mapping below is Lumio's own; if you can browse, confirm it against the NCERT table of contents and record any change in `docs/ASSUMPTIONS.md`. If you cannot, keep it as written and mark it `VERIFY`.*
+   351→   351→
+   352→   352→**Unit 1: Computer Systems and Organisation (10)**
+   353→   353→- *Ch 1 Computer System:* basic computer organisation (computer system, hardware, software, input and output devices, CPU, memory: primary, cache, secondary; units of memory: bit, byte, KB, MB, GB, TB, PB); types of software (system software: operating systems, system utilities, device drivers; programming tools and language translators: assembler, compiler, interpreter; application software); operating system (functions of the OS, OS user interface); Boolean logic (NOT, AND, OR, NAND, NOR, XOR, truth tables, De Morgan's laws, logic circuits).
+   354→   354→- *Ch 2 Encoding Schemes and Number System:* number systems (binary, octal, decimal, hexadecimal) and conversion between them; encoding schemes (ASCII, ISCII, Unicode: UTF-8, UTF-32).
+   355→   355→
+   356→   356→**Unit 2: Computational Thinking and Programming - I (45)**
+   357→   357→- *Ch 4 Introduction to Problem Solving:* steps for problem solving (analysing the problem, developing an algorithm, coding, testing and debugging); representation of algorithms using flowchart and pseudocode; decomposition.
+   358→   358→- *Ch 5 Getting Started with Python:* introduction and features of Python; "hello world"; interactive and script modes; Python character set; tokens (keyword, identifier, literal, operator, punctuator); variables; l-value and r-value; comments; data types (number: integer, float, complex; boolean; sequence: string, list, tuple; None; mapping: dictionary; mutable and immutable types); operators (arithmetic, relational, logical, assignment, augmented assignment, identity: is, is not; membership: in, not in); expressions, statements, precedence of operators, evaluation of an expression; type conversion (explicit and implicit); console input and output; errors (syntax, logical, run-time).
+   359→   359→- *Ch 6 Flow of Control:* introduction; use of indentation; sequential, conditional and iterative flow; conditional statements (if, if-else, if-elif-else; flowcharts; simple programs: absolute value, sort three numbers, divisibility); iterative statements (for, range(), while; flowcharts; break and continue; nested loops; programs: patterns, summation of series, factorial).
+   360→   360→- *Ch 7 Functions:* Python modules: `import <module>` and `from` forms; `math` (pi, e, sqrt, ceil, floor, pow, fabs, sin, cos, tan); `random` (random, randint, randrange); `statistics` (mean, median, mode). *Chapter note: the supplied Class 11 syllabus lists only the module topics from this chapter; user-defined functions appear in the Class 12 syllabus. Do not add topics.*
+   361→   361→- *Ch 8 Strings:* introduction; string operations (concatenation, repetition, membership, slicing); traversing a string with loops; built-in functions and methods (len, capitalize, title, lower, upper, count, find, index, endswith, startswith, isalnum, isalpha, isdigit, islower, isupper, isspace, lstrip, rstrip, strip, replace, join, partition, split).
+   362→   362→- *Ch 9 Lists:* introduction; indexing; list operations (concatenation, repetition, membership, slicing); traversal; built-ins (len, list, append, extend, insert, count, index, remove, pop, reverse, sort, sorted, min, max, sum); nested lists; programs (maximum, minimum, mean, linear search, frequency count).
+   363→   363→- *Ch 10 Tuples and Dictionaries:* tuples (introduction, indexing, concatenation, repetition, membership, slicing; built-ins len, tuple, count, index, sorted, min, max, sum; tuple assignment; nested tuples; programs: minimum, maximum, mean, linear search, frequency); dictionaries (introduction; accessing items by key; mutability: adding and modifying; traversal; built-ins len, dict, keys, values, items, get, update, del, clear, fromkeys, copy, pop, popitem, setdefault, max, min, sorted; programs: character count with a dictionary, employee-salary dictionary).
+   364→   364→
+   365→   365→**Unit 3: Society, Law and Ethics (15)**
+   366→   366→- *Ch 11 Societal Impact:* digital footprints; digital society and netizen (net etiquette, communication etiquette, social media etiquette); data protection (intellectual property rights: copyright, patent, trademark; violation of IPR: plagiarism, copyright infringement, trademark infringement; open-source software and licensing: Creative Commons, GPL, Apache); cyber crime (definition, hacking, eavesdropping, phishing and fraud emails, ransomware, cyber trolls, cyber bullying); cyber safety (safe browsing, identity protection, confidentiality); malware (viruses, trojans, adware); e-waste management; Information Technology Act (IT Act); technology and society (gender and disability issues while teaching and using computers).
+   367→   367→
+   368→   368→**NCERT chapter not listed in the supplied syllabus**
+   369→   369→- *Ch 3 Emerging Trends:* the NCERT book has this chapter, but the CBSE Class 11 syllabus you supplied does not list it. Add **one** row titled "Emerging Trends", `assessment: 'not_in_syllabus_doc'`, with the badge described in Section 2. File it under a group called "NCERT chapters not in the syllabus list" with `marks: null`, shown after the three units, and keep it **out of the completion percentage by default** (a toggle can include it) and out of the planner unless the learner flags it.
+   370→   370→
+   371→   371→*Practical (30 marks): Lab test 12 (Python program: 60% logic, 20% documentation, 20% code quality); Report file + viva 10 (report file with at least 20 Python programs 7; viva 3); Project 8.* Suggested practical list items: welcome message input and display; larger/smaller of two numbers; largest/smallest of three numbers; the three star/number/letter patterns with nested loops; series sums (four series); perfect number, Armstrong number and palindrome checks; prime or composite check; Fibonacci terms; GCD and LCM; counting vowels, consonants, uppercase, lowercase in a string; string palindrome and case conversion; largest/smallest in a list or tuple; swapping elements at even and odd positions in a list; searching an element in a list or tuple; dictionary of roll number, name and marks and listing students above 75; the class project.
+   372→   372→
+   373→   373→## A.5 Artificial Intelligence (843)
+   374→   374→
+   375→   375→Total 100 = Theory 50 + Practical 50. **Part A Employability Skills (10 marks, 2 per unit):** Communication Skills III (15 h), Self-Management Skills III (10 h), ICT Skills III (15 h), Entrepreneurial Skills III (10 h), Green Skills III (10 h). *The supplied file lists only these unit names; detailed topics are on the CBSE website, so track these five at unit level only and say why on screen.*
+   376→   376→
+   377→   377→**Part B Subject-specific skills (40 marks).** Hours are theory/practical; marks in brackets.
+   378→   378→
+   379→   379→1. **Introduction: Artificial Intelligence for Everyone** (4 h / 10 h; 4 marks): what is AI; evolution of AI; types of AI; domains of AI; AI terminologies; benefits and limitations of AI. Practical: categorise given applications into the three domains.
+   380→   380→2. **Unlocking your Future in AI** (6 / 10; 5): the global demand; common job roles in AI; essential skills and tools for prospective AI careers; opportunities in AI across industries. Practical: identify ten companies hiring for specific AI positions; note technical and soft skills listed by any two companies.
+   381→   381→3. **Python Programming** (10 / 20; 5): Level 1: basics, character sets, tokens, modes, operators, data types, control statements. Level 2: CSV files, libraries NumPy, Pandas, Scikit-learn. Practical: at least five programs for Level 1; at least five programs for Level 2.
+   382→   382→4. **Introduction to Capstone Project** (6 / 15; 5): design thinking; empathy map; Sustainable Development Goals; capstone project. Practical: create an empathy map for a given scenario; project abstract using the design-thinking framework.
+   383→   383→5. **Data Literacy: Data Collection to Data Analysis** (6 / 15; 6): what is data literacy; data collection; exploring data; statistical analysis of data; representation of data, Python programs for statistical analysis and visualisation; introduction to matrices; data pre-processing; data in modelling and evaluation. Practical: identify the level of measurement; Python programs for mean, median, mode, standard deviation, variance; matplotlib line, bar, histogram, scatter and pie charts.
+   384→   384→6. **Machine Learning Algorithms** (9 / 15; 6): machine learning in a nutshell; types of machine learning; supervised learning; correlation, regression, finding the line, linear regression algorithm; classification (how it works, types, k-Nearest Neighbour); unsupervised learning; clustering (how it works, types, k-means). Practical: Pearson correlation in MS Excel; linear regression in MS Excel; *advanced learners (not evaluated):* linear regression, k-NN and k-means in Python.
+   385→   385→7. **Leveraging Linguistics and Computer Science** (5 / 10; 5): understanding human language complexity; introduction to NLP (emotion detection and sentiment analysis, classification problems, chatbot); phases of NLP; applications of NLP. Practical: article on "IBM Project Debater: interesting facts"; ice-cream ordering chatbot (Dialogflow, Botsify or Botpress); *advanced learners (not evaluated):* POS tags program; rule-based chatbot in Python.
+   386→   386→8. **AI Ethics and Values** (4 / 5; 4): ethics in AI; the five pillars of AI ethics; bias, bias awareness, sources of bias; mitigating bias in AI systems; developing AI policies; Moral Machine game; Survival of the Best Fit game. Practical: summarise insights from the video "Humans need not apply"; role play on biased AI systems; comparative study of AI policies; ethical dilemmas using Moral Machine and Survival of the Best Fit.
+   387→   387→
+   388→   388→*Part A + Part B theory = 50 marks (10 + 40).*
+   389→   389→
+   390→   390→**Part C Practical (50 marks), trackable as practical items:** IBM SkillsBuild or other industry certification 5; Capstone project 12 (stages: prepare, form a team, define the problem aligned to an SDG, understand users, brainstorm, design, identify and collect data, build prototype, test, reflect as a team, reflect individually, video pitch); bootcamp, internship or start-up participation 7; practical file 10 (must include one certification, at least one activity from each unit, and one participation certificate); lab test or written exam 10; viva voce 6.
+   391→   391→*Advanced-learner items are tracked with an "Advanced, not evaluated" badge.*
+   392→   392→
+   393→   393→---
+   394→   394→
+   395→   395→*Subjects not supplied (English and others) are intentionally absent. The data layer is built so adding a subject or class means adding data, not code.*

@@ -1,0 +1,16 @@
+const {chromium}=require(process.argv[2]+'/playwright');
+(async()=>{const b=await chromium.launch();const p=await b.newPage();const errs=[];p.on('pageerror',e=>errs.push(e.message));
+await p.goto('file://'+process.cwd()+'/lumio.html');
+await p.evaluate(()=>{S.cat="school";S.board="CBSE";S.cls=CLS.indexOf("Class 10");S.band=bandOf(S.cls);S.papers=[];save();V="study";render()});
+console.log('CBSE links shown:',await p.evaluate(()=>[...document.querySelectorAll('main a')].map(a=>a.href).filter(h=>/SQP_CLASS/.test(h))));
+const say=()=>p.evaluate(()=>document.querySelector('[role=alert]')?.innerText);
+await p.click('[data-pp="add"]');console.log('empty:',await say());
+await p.fill('#pp1','Test paper A');await p.fill('#pp3','95');await p.fill('#pp4','80');await p.click('[data-pp="add"]');console.log('marks>total:',await say());
+const add=async(n,m,t)=>{await p.fill('#pp1',n);await p.fill('#pp3',String(m));await p.fill('#pp4',String(t));await p.fill('#pp5','90');await p.fill('#pp6','optics');await p.click('[data-pp="add"]')};
+for(const [n,m] of [['P1',40],['P2',50],['P3',55],['P4',60],['P5',64],['P6',70]])await add(n,m,80);
+console.log('logged:',await say(),'| stored',await p.evaluate(()=>S.papers.length));
+console.log('summary:',await p.evaluate(()=>[...document.querySelectorAll('main section')].find(s=>/Question papers/.test(s.innerText)).innerText.split('\n').filter(l=>/Best/.test(l))[0]));
+await p.click('[data-pp^="del:"]');console.log('after delete:',await p.evaluate(()=>S.papers.length));
+await p.reload();console.log('persisted:',await p.evaluate(()=>S.papers.length));
+await p.evaluate(()=>{S.board="ICSE / CISCE";save();V="study";render()});console.log('ICSE link:',await p.evaluate(()=>[...document.querySelectorAll('main section a')].map(a=>a.href).filter(h=>/cisce/.test(h))));
+await p.setViewportSize({width:390,height:800});console.log('sideways@390:',await p.evaluate(()=>document.documentElement.scrollWidth>innerWidth),'| errors',errs.length?errs:'none');await b.close()})();

@@ -1,0 +1,1040 @@
+     1→'use client';
+     2→
+     3→import { useCallback, useEffect, useRef, useState } from 'react';
+     4→import { RefreshCw, Sparkles } from 'lucide-react';
+     5→import { Button } from '@/components/ui/button';
+     6→import { Shell, type ScreenId } from './Shell';
+     7→import { StudyBuddy, type BuddyChapter } from './ai/StudyBuddy';
+     8→import {
+     9→  Onboarding, draftFromProfile, EMPTY_DRAFT,
+    10→  type FirstRunResult, type WizardDraft,
+    11→} from './screens/Onboarding';
+    12→import { Home } from './screens/Home';
+    13→import { SettingsScreen } from './screens/Settings';
+    14→import { Study, BoardGuide } from './screens/Study';
+    15→import { SyllabusScreen } from './screens/Syllabus';
+    16→import { Reader } from './screens/Reader';
+    17→import { Quiz, type QuizOutcome } from './screens/Quiz';
+    18→import { ProgressScreen } from './screens/Progress';
+    19→import { AchievementsScreen } from './screens/Achievements';
+    20→import { GamesScreen } from './screens/Games';
+    21→import { Planner } from './screens/Planner';
+    22→import { Focus } from './screens/Focus';
+    23→import { MockTests } from './screens/Mocks';
+    24→import { StudyTools } from './screens/StudyTools';
+    25→import { GuardianScreen } from './screens/Guardian';
+    26→import { Mascot } from './Mascot';
+    27→import { XpStreakDashboard } from './screens/XpStreak';
+    28→import { AccountBadge, AccountSettingsCard, DevicePrompt } from './account/AccountCard';
+    29→import { authApi, type AccountUser } from '@/lib/lumio/accountClient';
+    30→import { aiApi } from '@/lib/lumio/aiClient';
+    31→import type { NotesAiResult, PracticeAiItem, LessonAiResult, WorksheetAiResult } from '@/lib/lumio/aiClient';
+    32→import { dbMetaGet, dbMetaSet } from '@/lib/lumio/db';
+    33→import { BANDS } from '@/lib/lumio/content';
+    34→import { dayKey, hourOf, planDayWithOverrides, streakFrom, themeAt, totalXp } from '@/lib/lumio/domain';
+    35→import { toast } from '@/hooks/use-toast';
+    36→import { tFor } from '@/lib/lumio/i18n';
+    37→import {
+    38→  syllabusForProfile,
+    39→  syllabusSubjectById,
+    40→  unitMarksShare,
+    41→} from '@/lib/lumio/syllabus';
+    42→import { ACTIVITY_MINUTES, buildSyllabusPlan } from '@/lib/lumio/syllabus/planner';
+    43→import type { SyllabusPlan as SyllabusPlanT } from '@/lib/lumio/syllabus/planner';
+    44→import { deriveMark } from '@/lib/lumio/syllabus/types';
+    45→import type {
+    46→  AcceptedPlan,
+    47→  SyllabusTopicPatch,
+    48→  TopicId,
+    49→  TopicMark,
+    50→} from '@/lib/lumio/syllabus/types';
+    51→import {
+    52→  DEFAULT_SETTINGS, DEFAULT_TZ, defaultState, loadState, normalizeState, parseImport,
+    53→  projectState, resetAllStorage, saveState,
+    54→} from '@/lib/lumio/storage';
+    55→import { appendEvent, applyEvent, loadEventsAndSeed, replayEvents } from '@/lib/lumio/events';
+    56→import { requestPersistence } from '@/lib/lumio/db';
+    57→import { GAME_XP, LAB_GAME_IDS, PRACTICE_XP } from '@/lib/lumio/domain';
+    58→import type { LumioEvent, LumioState, MistakeTag, PracticeKind, Profile, Settings, ThemeName } from '@/lib/lumio/types';
+    59→
+    60→/**
+    61→ * LumioApp (chunk 2): single-route client app. Owns the typed state (a pure
+    62→ * projection of the IndexedDB event log), the theme engine, screen switching
+    63→ * and all mutations via `dispatch` — every change is an appended event (ADR
+    64→ * 0002). Persistence: event log -> projection -> snapshot mirror.
+    65→ */
+    66→export function LumioApp() {
+    67→  const [state, setState] = useState<LumioState | null>(null);
+    68→  const [hydrated, setHydrated] = useState(false);
+    69→  const [screen, setScreen] = useState<ScreenId>('home');
+    70→  const [reader, setReader] = useState<number | null>(null);
+    71→  const [quiz, setQuiz] = useState<number | null>(null);
+    72→  const [editProfile, setEditProfile] = useState(false);
+    73→  const [saveError, setSaveError] = useState<string | undefined>(undefined);
+    74→  const [now, setNow] = useState(() => new Date());
+    75→  const [swWaiting, setSwWaiting] = useState<ServiceWorker | null>(null);
+    76→  // ---- chunk 5A: account state (never gates the learning loop) ----
+    77→  const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
+    78→  const [accountAvail, setAccountAvail] = useState<'unknown' | 'ok' | 'unavailable'>('unknown');
+    79→  // ---- chunk 5B: AI capability (unknown -> treated as off until the probe resolves) ----
+    80→  const [aiMode, setAiMode] = useState<'unknown' | 'off' | 'fake' | 'zai' | 'openai-compatible'>('unknown');
+    81→  const [studyBuddyOpen, setStudyBuddyOpen] = useState(false);
+    82→  const [devOutbox, setDevOutbox] = useState(false);
+    83→  const [devicePrompt, setDevicePrompt] = useState<{ userId: string; userName: string | null } | null>(null);
+    84→  const stateRef = useRef<LumioState | null>(null);
+    85→  useEffect(() => { stateRef.current = state; }, [state]);
+    86→
+    87→  // ---- derived values: ALL declared above every useEffect hook ----
+    88→  // Plain constants (no useMemo). Keeping every binding above the effects
+    89→  // guarantees no hoisted effect can ever read them in their temporal dead zone
+    90→  // (the chunk-1 TDZ bug — this ordering is a hard rule for this file).
+    91→  const tz = state?.profile?.tz ?? DEFAULT_TZ;
+    92→  const calm = state?.settings.calm ?? false;
+    93→  const themeOverride = state?.settings.theme ?? 'auto';
+    94→  const themeSchedule = state?.settings.sch ?? DEFAULT_SETTINGS.sch;
+    95→  const theme: ThemeName =
+    96→    themeOverride !== 'auto' ? themeOverride : themeAt(hourOf(now, tz), themeSchedule);
+    97→  const band = state?.profile?.band;
+    98→  const density =
+    99→    band === 'young' ? ('young' as const) : band === 'above' ? ('adult' as const) : ('school' as const);
+   100→  // chunk 4B: interface language drives translation + Devanagari typography.
+   101→  // During first-run onboarding there is no profile yet, so the wizard draft's
+   102→  // language answer applies live (question 2 of onboarding).
+   103→  const draftLang = (state?.draft as unknown as WizardDraft | null)?.lang;
+   104→  const lang = state?.profile?.lang ?? draftLang ?? 'en';
+   105→  const tr = tFor(lang);
+   106→  // chunk 5B: AI features are hidden entirely until the capability probe says otherwise
+   107→  const aiAvailable = aiMode === 'fake' || aiMode === 'zai' || aiMode === 'openai-compatible';
+   108→
+   109→  // hydrate once (client only; never during SSR): replay the event log, seeded
+   110→  // from the chunk-1 snapshot when present. Falls back to the snapshot mirror
+   111→  // if IndexedDB replay fails entirely.
+   112→  useEffect(() => {
+   113→    let alive = true;
+   114→    requestPersistence();
+   115→    queueMicrotask(async () => {
+   116→      if (!alive) return;
+   117→      try {
+   118→        const events = await loadEventsAndSeed();
+   119→        const projected = replayEvents(events, new Date(), events.length && (events[events.length - 1] as { tz?: string }).tz ? ((events[events.length - 1] as unknown as { tz: string }).tz) : DEFAULT_TZ);
+   120→        if (alive) {
+   121→          setState(projected);
+   122→          saveState(projected);
+   123→        }
+   124→      } catch {
+   125→        const snapshot = loadState();
+   126→        if (alive) setState(snapshot ? projectState(normalizeState(snapshot), new Date(), snapshot.profile?.tz ?? DEFAULT_TZ) : defaultState());
+   127→      }
+   128→      if (alive) setHydrated(true);
+   129→    });
+   130→    return () => { alive = false; };
+   131→  }, []);
+   132→
+   133→  // minute ticker: keeps the theme engine and scheduler honest without tick-count timers
+   134→  useEffect(() => {
+   135→    const t = setInterval(() => setNow(new Date()), 30_000);
+   136→    return () => clearInterval(t);
+   137→  }, []);
+   138→
+   139→  // Theme + density classes must live on <html> so that font-size (rem scale),
+   140→  // body background and touch-target vars resolve globally (chunk-1 bug fix —
+   141→  // keep the sync on documentElement, not just the Shell wrapper).
+   142→  useEffect(() => {
+   143→    const root = document.documentElement;
+   144→    root.classList.remove(
+   145→      'theme-morning', 'theme-evening', 'theme-night', 'night',
+   146→      'density-young', 'density-school', 'density-adult', 'calm'
+   147→    );
+   148→    root.classList.add(`theme-${theme}`, `density-${density}`);
+   149→    if (theme === 'night') root.classList.add('night');
+   150→    if (calm) root.classList.add('calm');
+   151→  }, [theme, density, calm]);
+   152→
+   153→  // Language class on <html> pairs Noto Sans Devanagari with the brand fonts
+   154→  // and keeps assistive tech informed (chunk 4B i18n).
+   155→  useEffect(() => {
+   156→    const root = document.documentElement;
+   157→    root.classList.remove('lang-hi', 'lang-hinglish', 'lang-en');
+   158→    root.classList.add(`lang-${lang}`);
+   159→    root.setAttribute('lang', lang === 'hi' ? 'hi' : 'en');
+   160→  }, [lang]);
+   161→
+   162→  // ---- chunk 5A: account probe — AFTER hydration, never blocking ----
+   163→  // The app boots fully from local data; /api/auth/me and /api/capabilities
+   164→  // are tried afterwards. Unreachable server => honest 'unavailable' state,
+   165→  // every existing feature keeps working (degradation matrix master 8.2).
+   166→  useEffect(() => {
+   167→    if (!hydrated) return;
+   168→    let alive = true;
+   169→    void (async () => {
+   170→      const caps = await authApi.capabilities();
+   171→      const me = await authApi.me();
+   172→      if (!alive) return;
+   173→      const unavailable = !caps.ok || !me.ok || me.data.unavailable === true;
+   174→      setAccountAvail(unavailable ? 'unavailable' : 'ok');
+   175→      if (caps.ok) {
+   176→        setDevOutbox(caps.data.devOutbox === true);
+   177→        const mode = caps.data.ai?.mode;
+   178→        setAiMode(mode === 'fake' || mode === 'zai' || mode === 'openai-compatible' ? mode : 'off');
+   179→      } else {
+   180→        setAiMode('off');
+   181→      }
+   182→      if (me.ok && me.data.signedIn && me.data.user) {
+   183→        setAccountUser(me.data.user);
+   184→        await dbMetaSet('account-user-id', me.data.user.id);
+   185→      } else {
+   186→        setAccountUser(null);
+   187→      }
+   188→    })();
+   189→    return () => { alive = false; };
+   190→  }, [hydrated]);
+   191→
+   192→  const recordAccountId = (id: string) => {
+   193→    try {
+   194→      localStorage.setItem('lumio-account-last', id);
+   195→    } catch {
+   196→      /* private mode */
+   197→    }
+   198→  };
+   199→
+   200→  const handleSignedIn = (user: AccountUser) => {
+   201→    const prevId = (() => {
+   202→      try {
+   203→        return localStorage.getItem('lumio-account-last');
+   204→      } catch {
+   205→        return null;
+   206→      }
+   207→    })();
+   208→    const hasLocalProgress = !!stateRef.current?.profile;
+   209→    if (prevId && prevId !== user.id && hasLocalProgress) {
+   210→      // Never merge silently (spec 8): ask the learner what to do.
+   211→      setDevicePrompt({ userId: user.id, userName: user.name });
+   212→      setAccountUser(user);
+   213→      void dbMetaSet('account-user-id', user.id);
+   214→      return;
+   215→    }
+   216→    recordAccountId(user.id);
+   217→    setAccountUser(user);
+   218→    void dbMetaSet('account-user-id', user.id);
+   219→    toast({ title: tr('account.welcome'), description: tr('account.signedInToast') });
+   220→  };
+   221→
+   222→  const handleSignedOut = () => {
+   223→    setAccountUser(null);
+   224→    void dbMetaSet('account-user-id', '');
+   225→    toast({ title: tr('account.signedOutToast') });
+   226→  };
+   227→
+   228→  const handleDeleted = () => {
+   229→    setAccountUser(null);
+   230→    try {
+   231→      localStorage.removeItem('lumio-account-last');
+   232→    } catch {
+   233→      /* private mode */
+   234→    }
+   235→    void dbMetaSet('account-user-id', '');
+   236→    toast({ title: tr('account.deletedToast') });
+   237→  };
+   238→
+   239→  const accountSlot = (
+   240→    <AccountBadge
+   241→      lang={lang}
+   242→      user={accountUser}
+   243→      avail={accountAvail}
+   244→      devOutbox={devOutbox}
+   245→      onSignedIn={handleSignedIn}
+   246→      onSignedOut={handleSignedOut}
+   247→      onDeleted={handleDeleted}
+   248→    />
+   249→  );
+   250→
+   251→  // chunk 5B: when a chapter is open in Reader OR the Quiz the panel grounds on
+   252→  // THAT chapter; otherwise StudyBuddy shows a chapter select (chapter = null).
+   253→  const studyBuddyChapter: BuddyChapter | null =
+   254→    state?.profile?.band && (reader !== null || quiz !== null)
+   255→      ? (() => {
+   256→          const idx = reader ?? quiz ?? 0;
+   257→          const chapters = BANDS[state.profile!.band].chapters;
+   258→          const ch = chapters[Math.min(Math.max(0, idx), chapters.length - 1)];
+   259→          return ch
+   260→            ? { id: `${state.profile!.band}#${idx}`, title: ch.title, subject: ch.subject, chapterIndex: idx }
+   261→            : null;
+   262→        })()
+   263→      : null;
+   264→  const aiDemo = aiMode === 'fake';
+   265→
+   266→  // ---- chunk 5-AI-0: honest AI status chip (header) — derived above all effects ----
+   267→  const aiStatusChip = (
+   268→    <button
+   269→      type="button"
+   270→      onClick={() => setScreen('settings')}
+   271→      title={
+   272→        aiMode === 'zai' || aiMode === 'openai-compatible'
+   273→          ? tr('ai.chipRealTitle')
+   274→          : aiMode === 'fake'
+   275→            ? tr('ai.chipDemoTitle')
+   276→            : tr('ai.chipOffTitle')
+   277→      }
+   278→      className={
+   279→        'hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold sm:inline-flex min-h-[32px] ' +
+   280→        (aiMode === 'zai' || aiMode === 'openai-compatible'
+   281→          ? 'bg-primary/10 text-primary'
+   282→          : aiMode === 'fake'
+   283→            ? 'bg-gold-soft'
+   284→            : 'bg-muted text-muted-foreground')
+   285→      }
+   286→      style={aiMode === 'fake' ? { color: 'var(--gold)' } : undefined}
+   287→      aria-label={aiMode === 'zai' || aiMode === 'openai-compatible'
+   288→        ? tr('ai.chipRealTitle')
+   289→        : aiMode === 'fake'
+   290→          ? tr('ai.chipDemoTitle')
+   291→          : tr('ai.chipOffTitle')}
+   292→    >
+   293→      <Sparkles className="size-3.5" aria-hidden="true" />
+   294→      {aiMode === 'zai' || aiMode === 'openai-compatible'
+   295→        ? tr('ai.chipReal')
+   296→        : aiMode === 'fake'
+   297→          ? tr('ai.chipDemo')
+   298→          : tr('ai.chipOff')}
+   299→    </button>
+   300→  );
+   301→
+   302→  // ---- chunk 6: syllabus tracker (CBSE Class 11 gate; derived, never stored) ----
+   303→  const syllabusAll = state?.profile ? syllabusForProfile(state.profile.className, state.profile.board) : null;
+   304→  const syllabusAvailable = !!syllabusAll;
+   305→  const syllabusSubjects = (syllabusAll ?? []).filter(
+   306→    (s) => !state?.syllabus.hiddenSubjects.includes(s.id)
+   307→  );
+   308→  const todayKey = dayKey(now, tz);
+   309→  const acceptedSyllabusPlan: AcceptedPlan | null = state?.syllabus.plans[todayKey] ?? null;
+   310→  const dueCardsCount = Object.values(state?.srs ?? {}).filter((c) => c.due <= todayKey).length;
+   311→
+   312→  /** Slots for today (from the existing planner, overrides respected). */
+   313→  const syllabusSlots = state?.plan ? planDayWithOverrides(state.plan, state.planOverrides[todayKey]).slots : [];
+   314→
+   315→  /** Nearest future exam date the learner gave us — one date for all subjects. */
+   316→  const syllabusExamDate = (() => {
+   317→    const p = state?.profile;
+   318→    const candidates = [p?.nextExamDate, p?.examDate, p?.compExamDate, p?.targetDate].filter(
+   319→      (d): d is string => !!d
+   320→    );
+   321→    return candidates.sort()[0] ?? undefined;
+   322→  })();
+   323→
+   324→  const examDatesForSyllabus: Record<string, string | undefined> = {};
+   325→  for (const s of syllabusSubjects) examDatesForSyllabus[s.id] = syllabusExamDate;
+   326→
+   327→  /** Topics already planned or marked today are skipped by the planner. */
+   328→  const plannedTodaySet: ReadonlySet<TopicId> = new Set([
+   329→    ...(acceptedSyllabusPlan?.items.flatMap((i) => i.topicIds) ?? []),
+   330→    ...Object.entries(state?.syllabus.topics ?? [])
+   331→      .filter(([, rec]) => rec.updatedOn === todayKey)
+   332→      .map(([id]) => id),
+   333→  ]);
+   334→
+   335→  const buildSyllabusPlanToday = (): SyllabusPlanT =>
+   336→    buildSyllabusPlan({
+   337→      today: todayKey,
+   338→      dayIndex: 0,
+   339→      slots: syllabusSlots,
+   340→      subjects: syllabusSubjects,
+   341→      compSub: state?.profile?.compSub,
+   342→      progress: state?.syllabus.topics ?? {},
+   343→      examDates: examDatesForSyllabus,
+   344→      plannedToday: plannedTodaySet,
+   345→      dueCardsCount,
+   346→    });
+   347→
+   348→  const deterministicSyllabusPlan: SyllabusPlanT = buildSyllabusPlanToday();
+   349→
+   350→  // service-worker update prompt (chunk 2): never auto-swaps mid-session
+   351→  useEffect(() => {
+   352→    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+   353→    let reg: ServiceWorkerRegistration | null = null;
+   354→    const findWaiting = () => {
+   355→      if (reg?.waiting && navigator.serviceWorker.controller) setSwWaiting(reg.waiting);
+   356→    };
+   357→    navigator.serviceWorker.register('/sw.js')
+   358→      .then((r) => {
+   359→        reg = r;
+   360→        findWaiting();
+   361→        r.addEventListener('updatefound', () => {
+   362→          const nw = r.installing;
+   363→          nw?.addEventListener('statechange', () => {
+   364→            if (nw.state === 'installed') findWaiting();
+   365→          });
+   366→        });
+   367→      })
+   368→      .catch(() => { /* offline/PWA unsupported — the app still works */ });
+   369→  }, []);
+   370→
+   371→  /**
+   372→   * The one mutation path: append an event, reapply the projection, mirror the
+   373→   * snapshot. Derived values (XP, best scores, streak, achievements) come out
+   374→   * of the projection only — never set by callers (5.4).
+   375→   */
+   376→  const dispatch = useCallback((e: LumioEvent) => {
+   377→    const prev = stateRef.current;
+   378→    if (!prev) return;
+   379→    const zone = prev.profile?.tz ?? DEFAULT_TZ;
+   380→    const next = projectState(applyEvent(prev, e), new Date(), zone);
+   381→    stateRef.current = next;
+   382→    setState(next);
+   383→    const res = saveState(next);
+   384→    setSaveError(res.ok ? undefined : res.error);
+   385→    // Streak Saver notifications (chunk 4C): earned / bought / used.
+   386→    const prevOwned = prev.freeze.owned;
+   387→    const nextOwned = next.freeze.owned;
+   388→    if (nextOwned > prevOwned) {
+   389→      toast({
+   390→        title: e.type === 'saver-bought' ? 'Streak Saver purchased' : 'Streak Saver earned!',
+   391→        description:
+   392→          e.type === 'saver-bought'
+   393→            ? 'It will protect your streak if a day is missed.'
+   394→            : 'Great performance — your streak just got an extra life.',
+   395→      });
+   396→    } else if (nextOwned < prevOwned) {
+   397→      toast({
+   398→        title: 'Streak Saver used',
+   399→        description: 'Your streak stays alive. Keep learning to earn more.',
+   400→      });
+   401→    }
+   402→    void appendEvent(e, zone).catch(() => {
+   403→      // event log unavailable (private mode) — the snapshot mirror keeps the
+   404→      // session working; the learner sees an honest error if saving failed.
+   405→    });
+   406→  }, []);
+   407→
+   408→  // ---- mutations ----
+   409→  const finishFirstRun = (r: FirstRunResult) => {
+   410→    dispatch({ type: 'onboarding-finished', profile: r.profile, plan: r.plan });
+   411→    setEditProfile(false);
+   412→    setScreen('home');
+   413→  };
+   414→
+   415→  const saveDraft = (draft: WizardDraft | null) => {
+   416→    dispatch({ type: 'draft-saved', draft: draft as unknown as Record<string, unknown> | null });
+   417→  };
+   418→
+   419→  const patchSettings = (patch: Partial<Settings>) => {
+   420→    dispatch({ type: 'settings-changed', patch });
+   421→  };
+   422→
+   423→  const patchPlan = (patch: Partial<NonNullable<LumioState['plan']>>) => {
+   424→    if (!state?.plan) return;
+   425→    dispatch({ type: 'plan-changed', plan: { ...state.plan, ...patch } });
+   426→  };
+   427→
+   428→  const markPlanReviewed = () => {
+   429→    if (!state) return;
+   430→    const today = dayKey(new Date(), tz);
+   431→    if (state.planReviews[today]) return;
+   432→    // The activity makes the daily quest claimable; the Claim button grants the XP.
+   433→    dispatch({ type: 'plan-reviewed', date: today });
+   434→  };
+   435→
+   436→  const claimQuest = (questId: string, periodKey: string, xp: number) => {
+   437→    if (!state) return;
+   438→    if (state.quests.some((c) => c.questId === questId && c.periodKey === periodKey)) return;
+   439→    dispatch({ type: 'quest-claimed', questId, periodKey, xp, date: dayKey(new Date(), tz) });
+   440→  };
+   441→
+   442→  const finishQuiz = (chapterIndex: number, outcome: QuizOutcome) => {
+   443→    dispatch({
+   444→      type: 'quiz-attempted',
+   445→      chapterId: `${state?.profile?.band ?? 'sec'}#${chapterIndex}`,
+   446→      score: outcome.score,
+   447→      nq: outcome.nq,
+   448→      wrongIds: outcome.wrongIds,
+   449→      theme,
+   450→      date: dayKey(new Date(), tz),
+   451→    });
+   452→    setQuiz(null);
+   453→    setReader(null);
+   454→    setScreen('home');
+   455→  };
+   456→
+   457→  // ---- chunk 5-AI feature 2: AI fresh-quiz completion. XP flows through the
+   458→  // deterministic improvement rule with the daily cap + per-chapter best
+   459→  // enforced in applyEvent — AI output itself never grants anything.
+   460→  const finishQuizAi = (chapterIndex: number, r: { quizHash: string; score: number; nq: number; wrongIds: string[] }) => {
+   461→    dispatch({
+   462→      type: 'ai-quiz-attempted',
+   463→      chapterRef: `${state?.profile?.band ?? 'sec'}#${chapterIndex}`,
+   464→      quizHash: r.quizHash,
+   465→      score: r.score,
+   466→      nq: r.nq,
+   467→      wrongIds: r.wrongIds,
+   468→      theme,
+   469→      date: dayKey(new Date(), tz),
+   470→    });
+   471→    setQuiz(null);
+   472→    setReader(null);
+   473→    setScreen('home');
+   474→  };
+   475→
+   476→  const flashcardsReviewed = (chapterIndex: number) => {
+   477→    dispatch({ type: 'flashcards-reviewed', chapterId: `${state?.profile?.band ?? 'sec'}#${chapterIndex}`, date: dayKey(new Date(), tz) });
+   478→  };
+   479→
+   480→  // ---- chunk 3: games, labs and the practice engine ----
+   481→  const winGame = (gameId: string) => {
+   482→    const prev = stateRef.current;
+   483→    const firstClear = !prev?.xpLedger.some((x) => x.source === 'game' && x.ref === gameId);
+   484→    dispatch({
+   485→      type: 'game-won',
+   486→      gameId,
+   487→      xp: GAME_XP[gameId] ?? 20,
+   488→      date: dayKey(new Date(), tz),
+   489→      lab: LAB_GAME_IDS.has(gameId),
+   490→      firstClear,
+   491→    });
+   492→  };
+   493→  const reviewCard = (cardId: string, correct: boolean) => {
+   494→    dispatch({ type: 'card-reviewed', cardId, correct, date: dayKey(new Date(), tz) });
+   495→  };
+   496→  const finishPractice = (kind: PracticeKind) => {
+   497→    dispatch({ type: 'practice-done', kind, xp: PRACTICE_XP[kind] ?? 10, date: dayKey(new Date(), tz) });
+   498→  };
+   499→  const finishLegendary = () => {
+   500→    dispatch({ type: 'legendary-completed', date: dayKey(new Date(), tz) });
+   501→  };
+   502→  const tagMistake = (questionId: string, tag: MistakeTag | null) => {
+   503→    dispatch({ type: 'mistake-tagged', questionId, tag });
+   504→  };
+   505→
+   506→  // ---- chunk 5B: AI practice-only saves (kind 'notes' | 'practice') ----
+   507→  // Never touches XP/streak/mastery — the projection keeps the record in
+   508→  // state.aiContent (deduped by id, capped at 30, capped by applyEvent).
+   509→  const saveAiContent = (
+   510→    kind: 'notes' | 'practice',
+   511→    id: string,
+   512→    date: string,
+   513→    payload: NotesAiResult | { items: PracticeAiItem[] },
+   514→    label: string,
+   515→  ) => {
+   516→    dispatch({ type: 'ai-generated', id, kind, date, payload, label });
+   517→  };
+   518→  const saveAiNotes = (args: {
+   519→    id: string;
+   520→    kind: 'notes';
+   521→    date: string;
+   522→    payload: NotesAiResult;
+   523→    label: string;
+   524→  }) => {
+   525→    saveAiContent(args.kind, args.id, args.date, args.payload, args.label);
+   526→  };
+   527→  // chunk 5-AI: lesson/worksheet saves via the ai-content-saved event (same
+   528→  // cap + dedupe as ai-generated; practice-only, never any XP).
+   529→  const saveAiContentV2 = (
+   530→    kind: 'lesson' | 'worksheet',
+   531→    id: string,
+   532→    date: string,
+   533→    payload: LessonAiResult | WorksheetAiResult,
+   534→    label: string,
+   535→  ) => {
+   536→    dispatch({ type: 'ai-content-saved', id, kind, date, payload, label });
+   537→  };
+   538→
+   539→  // ---- chunk 4A: focus suite, mocks, streak freezes, reschedule ----
+   540→  const finishFocusBlock = (mins: number) => {
+   541→    dispatch({ type: 'focus-block-done', date: dayKey(new Date(), tz), mins });
+   542→  };
+   543→  const recordMock = (mock: { date: string; subject: string; score: number; total: number; weakChapters: number[] }) => {
+   544→    dispatch({ type: 'mock-recorded', mock });
+   545→  };
+   546→  const useFreeze = (date: string) => {
+   547→    dispatch({ type: 'freeze-used', date });
+   548→  };
+   549→  const rescheduleSession = (date: string, index: number, startMin: number | null) => {
+   550→    dispatch({ type: 'session-rescheduled', date, index, startMin });
+   551→  };
+   552→
+   553→  // ---- chunk 4C: XP & Streak dashboard ----
+   554→  const completeSession = (date: string, index: number, onTime: boolean) => {
+   555→    dispatch({ type: 'session-done', date, index, onTime });
+   556→  };
+   557→  const buySaver = () => {
+   558→    dispatch({ type: 'saver-bought', date: dayKey(new Date(), tz) });
+   559→  };
+   560→
+   561→  // ---- chunk 4B: study tools ----
+   562→  const addNote = (note: { id: string; name: string; text: string; added: string }) => {
+   563→    dispatch({ type: 'note-added', note });
+   564→  };
+   565→  const removeNote = (noteId: string) => {
+   566→    dispatch({ type: 'note-removed', noteId });
+   567→  };
+   568→  const addVideo = (video: { id: string; videoId: string; sourceUrl: string; added: string }) => {
+   569→    dispatch({ type: 'video-added', video });
+   570→  };
+   571→  const removeVideo = (videoId: string) => {
+   572→    dispatch({ type: 'video-removed', videoId });
+   573→  };
+   574→
+   575→  // ---- chunk 6: syllabus tracker (self-reported marks; never any XP) ----
+   576→  const syllabusTopicUpdate = (topicId: string, patch: SyllabusTopicPatch) => {
+   577→    dispatch({ type: 'syllabus-topic-updated', topicId, patch, date: dayKey(new Date(), tz) });
+   578→  };
+   579→  const syllabusTopicsBulk = (topicIds: string[], patch: SyllabusTopicPatch) => {
+   580→    dispatch({ type: 'syllabus-topics-bulk', topicIds, patch, date: dayKey(new Date(), tz) });
+   581→  };
+   582→  const acceptSyllabusPlan = (plan: AcceptedPlan) => {
+   583→    dispatch({ type: 'syllabus-plan-accepted', date: dayKey(new Date(), tz), plan });
+   584→  };
+   585→  const clearSyllabusPlan = () => {
+   586→    dispatch({ type: 'syllabus-plan-cleared', date: dayKey(new Date(), tz) });
+   587→  };
+   588→  const setSyllabusVisibility = (subjectId: string, hidden: boolean) => {
+   589→    dispatch({ type: 'syllabus-subject-visibility', subjectId, hidden });
+   590→  };
+   591→
+   592→  /**
+   593→   * AI refinement of today's deterministic plan (chunk 6, section 5.2).
+   594→   * Sends ONLY public syllabus ids/titles, status/flag enums, mark shares,
+   595→   * exam buckets and slot lengths — never name, email, user id, and notes
+   596→   * only when the learner opts in (sanitised at the event boundary).
+   597→   * The deterministic plan always wins: any invalid AI item is dropped here;
+   598→   * if nothing valid remains, returns null and the caller shows the
+   599→   * deterministic plan with a calm note.
+   600→   */
+   601→  const refineSyllabusPlan = async (includeNotes: boolean): Promise<AcceptedPlan | null> => {
+   602→    const det = buildSyllabusPlanToday();
+   603→    if (det.items.length === 0) return null;
+   604→    const known = new Set(det.items.flatMap((i) => i.topicIds));
+   605→    const slotSubjectOf = new Map(det.items.map((i) => [i.slotIndex, i.subjectId]));
+   606→    const titleOf = new Map(det.items.flatMap((i) => i.topicIds.map((id, idx) => [id, i.topicTitles[idx] ?? id] as const)));
+   607→    const minutesOf = new Map(det.items.flatMap((i) => {
+   608→      const per = Math.max(5, Math.floor(i.minutes / Math.max(1, i.topicIds.length)));
+   609→      return i.topicIds.map((id) => [id, per] as const);
+   610→    }));
+   611→    const nowT = Date.now();
+   612→    const examMs = syllabusExamDate ? Date.parse(syllabusExamDate + 'T12:00:00Z') : NaN;
+   613→    const examBucket = (id: TopicId): 'none' | 'soon' | 'later' => {
+   614→      void id;
+   615→      if (!syllabusExamDate || Number.isNaN(examMs)) return 'none';
+   616→      const days = Math.round((examMs - nowT) / 86_400_000);
+   617→      return days >= 0 && days <= 30 ? 'soon' : 'later';
+   618→    };
+   619→
+   620→    const candidates = det.items.flatMap((item) =>
+   621→      item.topicIds.map((topicId) => {
+   622→        const rec = stateRef.current?.syllabus.topics[topicId];
+   623→        const mark: TopicMark = deriveMark(rec);
+   624→        const found = syllabusSubjectById(syllabusSubjects, item.subjectId);
+   625→        let share = 0;
+   626→        if (found) {
+   627→          for (const u of found.units) {
+   628→            if (u.chapters.some((c) => c.topics.some((t) => t.id === topicId))) {
+   629→              share = unitMarksShare(found, u);
+   630→              break;
+   631→            }
+   632→          }
+   633→        }
+   634→        return {
+   635→          topicId,
+   636→          title: (titleOf.get(topicId) ?? '').slice(0, 200),
+   637→          subjectId: item.subjectId,
+   638→          slotIndex: item.slotIndex,
+   639→          activity: item.activity,
+   640→          minutes: minutesOf.get(topicId) ?? ACTIVITY_MINUTES.learn,
+   641→          status: mark,
+   642→          flags: rec?.flags ?? [],
+   643→          marksShare: share,
+   644→          examBucket: examBucket(topicId),
+   645→        };
+   646→      })
+   647→    );
+   648→
+   649→    const notes = includeNotes
+   650→      ? det.items
+   651→          .flatMap((i) => i.topicIds)
+   652→          .map((id) => stateRef.current?.syllabus.topics[id]?.note.trim() ?? '')
+   653→          .filter((n) => n.length > 0)
+   654→          .slice(0, 8)
+   655→      : undefined;
+   656→
+   657→    const res = await aiApi.syllabusCoach({
+   658→      band: stateRef.current?.profile?.band ?? 'sec',
+   659→      lang: stateRef.current?.profile?.lang ?? 'en',
+   660→      includeNotes: includeNotes && !!notes?.length,
+   661→      notes,
+   662→      slots: syllabusSlots.map((s, i) => ({
+   663→        index: i,
+   664→        subject: slotSubjectOf.get(i) ?? '',
+   665→        minutes: s.endMin - s.startMin,
+   666→      })),
+   667→      candidates,
+   668→    });
+   669→    if (!res.ok) return null;
+   670→
+   671→    // Client-side re-validation: the deterministic plan is the source of truth.
+   672→    const seen = new Set<TopicId>();
+   673→    const items = res.data.data.items
+   674→      .filter((it) => {
+   675→        if (!slotSubjectOf.has(it.slotIndex)) return false;
+   676→        const slot = syllabusSlots[it.slotIndex];
+   677→        if (!slot || it.minutes > slot.endMin - slot.startMin) return false;
+   678→        if (it.topicIds.length === 0) return false;
+   679→        const subject = slotSubjectOf.get(it.slotIndex);
+   680→        for (const id of it.topicIds) {
+   681→          if (!known.has(id) || seen.has(id)) return false;
+   682→          if (det.items.find((d) => d.topicIds.includes(id))?.subjectId !== subject) return false;
+   683→          seen.add(id);
+   684→        }
+   685→        return true;
+   686→      })
+   687→      .map((it) => ({
+   688→        slotIndex: it.slotIndex,
+   689→        subjectId: slotSubjectOf.get(it.slotIndex) ?? 'maths',
+   690→        topicIds: it.topicIds,
+   691→        topicTitles: it.topicIds.map((id) => titleOf.get(id) ?? id),
+   692→        activity: (['learn', 'practise', 'revise', 'recall'].includes(it.activity) ? it.activity : 'learn') as 'learn' | 'practise' | 'revise' | 'recall',
+   693→        minutes: it.minutes,
+   694→        reasonCodes: [],
+   695→        reason: it.reason.slice(0, 160),
+   696→      }));
+   697→    if (items.length === 0) return null;
+   698→    return { date: todayKey, source: 'ai', items, summary: res.data.data.summary.slice(0, 200) };
+   699→  };
+   700→
+   701→  const importJson = (json: string) => {
+   702→    if (!state) return { ok: false as const, error: 'Not ready yet.' };
+   703→    const parsed = parseImport(json);
+   704→    if ('error' in parsed) return { ok: false as const, error: parsed.error };
+   705→    if ('report' in parsed) {
+   706→      // legacy lumio-s1 import: report skipped keys honestly (R13)
+   707→      dispatch({ type: 'bootstrap', state: projectState(normalizeState(parsed.state), new Date(), parsed.state.profile?.tz ?? DEFAULT_TZ) });
+   708→      const skipped = parsed.report.skipped.length
+   709→        ? ` Skipped unknown keys: ${parsed.report.skipped.join(', ')}.`
+   710→        : ' No unknown keys were skipped.';
+   711→      return {
+   712→        ok: true as const,
+   713→        message: `Prototype import complete. Preserved: ${parsed.report.preserved.join(', ')}.${skipped}`,
+   714→      };
+   715→    }
+   716→    dispatch({ type: 'bootstrap', state: projectState(normalizeState(parsed.state), new Date(), parsed.state.profile?.tz ?? DEFAULT_TZ) });
+   717→    return { ok: true as const, message: 'Lumio v2 import complete.' };
+   718→  };
+   719→
+   720→  const resetAll = () => {
+   721→    void resetAllStorage().then(() => {
+   722→      const fresh = defaultState();
+   723→      stateRef.current = fresh;
+   724→      setState(fresh);
+   725→      setSaveError(undefined);
+   726→      setScreen('home');
+   727→      setReader(null);
+   728→      setQuiz(null);
+   729→      setEditProfile(false);
+   730→    });
+   731→  };
+   732→
+   733→  const applySwUpdate = () => {
+   734→    swWaiting?.postMessage({ type: 'SKIP_WAITING' });
+   735→    setSwWaiting(null);
+   736→    // the new worker takes control; a reload follows its controllerchange
+   737→    navigator.serviceWorker?.addEventListener('controllerchange', () => window.location.reload(), { once: true });
+   738→  };
+   739→
+   740→  if (!hydrated || !state) {
+   741→    // brief hydration shell; content pops in client-side
+   742→    return (
+   743→      <div className="flex min-h-dvh items-center justify-center bg-background">
+   744→        <p className="text-sm text-muted-foreground" aria-live="polite">Loading Lumio…</p>
+   745→      </div>
+   746→    );
+   747→  }
+   748→
+   749→  const firstRun = !state.profile;
+   750→  const draft = (state.draft as unknown as WizardDraft | null) ?? null;
+   751→  const xp = totalXp(state.xpLedger);
+   752→  const currentStreak = streakFrom(state.days, dayKey(now, tz));
+   753→  const activeBand = state.profile?.band ?? 'sec';
+   754→
+   755→  // pre-filled wizard draft when editing the profile (keeps all progress)
+   756→  const editDraft = state.profile
+   757→    ? draftFromProfile(state.profile, state.plan, state.settings.theme)
+   758→    : null;
+   759→  const effectiveDraft: WizardDraft | null = editProfile && editDraft
+   760→    ? editDraft
+   761→    : firstRun && draft
+   762→      ? { ...EMPTY_DRAFT, ...draft }
+   763→      : null;
+   764→
+   765→  // chunk 5B: floating AI slot — trigger button (right side only, so it never
+   766→  // overlaps the SW-update toast at bottom-24 inset-x-3) + the StudyBuddy panel.
+   767→  const aiSlot = (
+   768→    <>
+   769→      {aiAvailable && !firstRun && !studyBuddyOpen && (
+   770→        <button
+   771→          type="button"
+   772→          onClick={() => setStudyBuddyOpen(true)}
+   773→          aria-haspopup="dialog"
+   774→          className="press fixed bottom-24 right-3 z-40 flex min-h-[44px] items-center gap-2 rounded-full border border-border bg-card px-4 text-sm font-semibold shadow-lg md:bottom-6 md:right-6"
+   775→        >
+   776→          <Sparkles className="size-5 text-primary" aria-hidden="true" />
+   777→          {tr('ai.askTitle')}
+   778→        </button>
+   779→      )}
+   780→      <StudyBuddy
+   781→        open={studyBuddyOpen}
+   782→        onOpenChange={setStudyBuddyOpen}
+   783→        state={state}
+   784→        chapter={studyBuddyChapter}
+   785→        aiAvailable={aiAvailable}
+   786→        demo={aiDemo}
+   787→      />
+   788→    </>
+   789→  );
+   790→
+   791→  const renderScreen = () => {
+   792→    if (firstRun || editProfile) {
+   793→      return (
+   794→        <Onboarding
+   795→          draft={effectiveDraft}
+   796→          onDraftChange={saveDraft}
+   797→          onFinish={finishFirstRun}
+   798→          onCancel={firstRun ? undefined : () => setEditProfile(false)}
+   799→          theme={theme}
+   800→          onTheme={(o) => patchSettings({ theme: o })}
+   801→        />
+   802→      );
+   803→    }
+   804→    if (quiz !== null) {
+   805→      const ch = state.profile?.band ? state.profile.band : 'sec';
+   806→      return (
+   807→        <Quiz
+   808→          state={state}
+   809→          band={ch}
+   810→          chapterIndex={quiz}
+   811→          chapter={BAND_CHAPTER(ch, quiz)}
+   812→          onBack={() => setQuiz(null)}
+   813→          onFinish={(o) => finishQuiz(quiz, o)}
+   814→          onFinishAi={(r) => finishQuizAi(quiz, r)}
+   815→          onTagMiss={(qid, tag) => dispatch({ type: 'mistake-tagged', questionId: qid, tag })}
+   816→          aiAvailable={aiAvailable}
+   817→          demo={aiDemo}
+   818→        />
+   819→      );
+   820→    }
+   821→    if (reader !== null) {
+   822→      return (
+   823→        <Reader
+   824→          state={state}
+   825→          chapterIndex={reader}
+   826→          onBack={() => setReader(null)}
+   827→          onStartQuiz={() => setQuiz(reader)}
+   828→          onFlashcardsReviewed={() => flashcardsReviewed(reader)}
+   829→          onAskAi={aiAvailable ? () => setStudyBuddyOpen(true) : undefined}
+   830→          aiAvailable={aiAvailable}
+   831→          demo={aiDemo}
+   832→          onSaveAi={saveAiContent}
+   833→          onSaveLesson={saveAiContentV2}
+   834→        />
+   835→      );
+   836→    }
+   837→    switch (screen) {
+   838→      case 'syllabus':
+   839→        return (
+   840→          <SyllabusScreen
+   841→            state={state}
+   842→            now={now}
+   843→            subjects={syllabusSubjects}
+   844→            allSubjects={syllabusAll ?? []}
+   845→            deterministicPlan={deterministicSyllabusPlan}
+   846→            acceptedPlan={acceptedSyllabusPlan}
+   847→            dueCardsCount={dueCardsCount}
+   848→            aiAvailable={aiAvailable}
+   849→            demo={aiDemo}
+   850→            onTopicUpdate={syllabusTopicUpdate}
+   851→            onTopicsBulk={syllabusTopicsBulk}
+   852→            onAcceptPlan={acceptSyllabusPlan}
+   853→            onClearPlan={clearSyllabusPlan}
+   854→            onSubjectVisibility={setSyllabusVisibility}
+   855→            onRefineAi={refineSyllabusPlan}
+   856→            onGoSettings={() => { setScreen('settings'); setReader(null); setQuiz(null); }}
+   857→          />
+   858→        );
+   859→      case 'study':
+   860→        return <Study state={state} onOpenChapter={(i) => setReader(i)} />;
+   861→      case 'board':
+   862→        return <BoardGuide state={state} />;
+   863→      case 'planner':
+   864→        return (
+   865→          <Planner
+   866→            state={state}
+   867→            now={now}
+   868→            onReschedule={rescheduleSession}
+   869→            onSessionDone={completeSession}
+   870→            aiAvailable={aiAvailable}
+   871→            demo={aiDemo}
+   872→          />
+   873→        );
+   874→      case 'xpstreak':
+   875→        return (
+   876→          <XpStreakDashboard state={state} now={now} onBuySaver={buySaver} onUseSaver={useFreeze} />
+   877→        );
+   878→      case 'focus':
+   879→        return <Focus state={state} now={now} onFinishBlock={finishFocusBlock} />;
+   880→      case 'tools':
+   881→        return (
+   882→          <StudyTools
+   883→            state={state}
+   884→            now={now}
+   885→            onAddNote={addNote}
+   886→            onRemoveNote={removeNote}
+   887→            onAddVideo={addVideo}
+   888→            onRemoveVideo={removeVideo}
+   889→            aiAvailable={aiAvailable}
+   890→            demo={aiDemo}
+   891→            onSaveAi={saveAiNotes}
+   892→            onSaveWorksheet={(a) => saveAiContentV2('worksheet', a.id, a.date, a.payload, a.label)}
+   893→          />
+   894→        );
+   895→      case 'guardian':
+   896→        return (
+   897→          <GuardianScreen
+   898→            state={state}
+   899→            now={now}
+   900→            onSettings={patchSettings}
+   901→            onReset={resetAll}
+   902→            aiAvailable={aiAvailable}
+   903→            demo={aiDemo}
+   904→          />
+   905→        );
+   906→      case 'progress':
+   907→        return <ProgressScreen state={state} now={now} />;
+   908→      case 'ach':
+   909→        return <AchievementsScreen state={state} now={now} />;
+   910→      case 'games':
+   911→        return (
+   912→          <GamesScreen
+   913→            state={state}
+   914→            band={activeBand}
+   915→            today={dayKey(now, tz)}
+   916→            onGameWin={winGame}
+   917→            onCardReview={reviewCard}
+   918→            onPracticeDone={finishPractice}
+   919→            onLegendary={finishLegendary}
+   920→            onTagMistake={tagMistake}
+   921→            onOpenChapter={(i) => setReader(i)}
+   922→            aiAvailable={aiAvailable}
+   923→            demo={aiDemo}
+   924→            mocksPanel={
+   925→              <MockTests
+   926→                state={state}
+   927→                today={dayKey(now, tz)}
+   928→                band={activeBand}
+   929→                onRecordMock={recordMock}
+   930→                aiAvailable={aiAvailable}
+   931→                demo={aiDemo}
+   932→              />
+   933→            }
+   934→          />
+   935→        );
+   936→      case 'settings':
+   937→        return (
+   938→          <SettingsScreen
+   939→            state={state}
+   940→            onSettings={patchSettings}
+   941→            onPlan={patchPlan}
+   942→            onImport={importJson}
+   943→            onReset={resetAll}
+   944→            onEditProfile={() => setEditProfile(true)}
+   945→            saveError={saveError}
+   946→            onLang={(l) => dispatch({ type: 'profile-patched', patch: { lang: l } as Partial<Profile> })}
+   947→            aiMode={aiMode}
+   948→            accountSlot={
+   949→              <AccountSettingsCard
+   950→                lang={lang}
+   951→                user={accountUser}
+   952→                avail={accountAvail}
+   953→                devOutbox={devOutbox}
+   954→                onSignedIn={handleSignedIn}
+   955→                onSignedOut={handleSignedOut}
+   956→                onDeleted={handleDeleted}
+   957→              />
+   958→            }
+   959→          />
+   960→        );
+   961→      default:
+   962→        return (
+   963→          <Home
+   964→            state={state}
+   965→            now={now}
+   966→            theme={theme}
+   967→            onOpenSettings={() => setScreen('settings')}
+   968→            onOpenStudy={() => setScreen('study')}
+   969→            onOpenChapter={(i) => setReader(i)}
+   970→            onPlanReviewed={markPlanReviewed}
+   971→            onQuestClaim={claimQuest}
+   972→            onOpenPlanner={() => setScreen('planner')}
+   973→            onOpenFocus={() => setScreen('focus')}
+   974→            onUseFreeze={useFreeze}
+   975→            onSessionDone={(index, onTime) => completeSession(dayKey(now, tz), index, onTime)}
+   976→            onOpenXpStreak={() => setScreen('xpstreak')}
+   977→            syllabusPlan={acceptedSyllabusPlan}
+   978→            onSyllabusTopicUpdate={syllabusTopicUpdate}
+   979→          />
+   980→        );
+   981→    }
+   982→  };
+   983→
+   984→  return (
+   985→    <>
+   986→      <Shell
+   987→        screen={screen}
+   988→        lang={lang}
+   989→        onScreen={(s) => { setScreen(s); setReader(null); setQuiz(null); }}
+   990→        theme={theme}
+   991→        density={density}
+   992→        calm={calm}
+   993→        band={activeBand}
+   994→        syllabusAvailable={syllabusAvailable}
+   995→        xp={xp}
+   996→        streak={currentStreak}
+   997→        bare={firstRun}
+   998→        accountSlot={accountSlot}
+   999→        aiStatusSlot={aiStatusChip}
+  1000→        aiSlot={aiSlot}
+  1001→      >
+  1002→        {renderScreen()}
+  1003→      </Shell>
+  1004→      {swWaiting && (
+  1005→        <div
+  1006→          role="status"
+  1007→          className="fixed inset-x-3 bottom-24 z-50 flex items-center gap-3 rounded-2xl border border-border bg-card p-3 shadow-lg md:bottom-6 md:left-auto md:right-6 md:w-80"
+  1008→        >
+  1009→          <RefreshCw className="size-5 shrink-0 text-primary" aria-hidden="true" />
+  1010→          <div className="min-w-0 flex-1">
+  1011→            <p className="text-sm font-semibold">New version available</p>
+  1012→            <p className="text-xs text-muted-foreground">Refresh to get the latest Lumio. Your progress is safe.</p>
+  1013→          </div>
+  1014→          <Button size="sm" onClick={applySwUpdate}>Refresh</Button>
+  1015→        </div>
+  1016→      )}
+  1017→      {devicePrompt && (
+  1018→        <DevicePrompt
+  1019→          lang={lang}
+  1020→          onKeep={() => {
+  1021→            recordAccountId(devicePrompt.userId);
+  1022→            setDevicePrompt(null);
+  1023→          }}
+  1024→          onFresh={() => {
+  1025→            recordAccountId(devicePrompt.userId);
+  1026→            setDevicePrompt(null);
+  1027→            resetAll();
+  1028→          }}
+  1029→        />
+  1030→      )}
+  1031→    </>
+  1032→  );
+  1033→}
+  1034→
+  1035→// small local helper
+  1036→function BAND_CHAPTER(band: keyof typeof BANDS, index: number) {
+  1037→  const chapters = BANDS[band].chapters;
+  1038→  return chapters[Math.min(Math.max(0, index), chapters.length - 1)];
+  1039→}
+  1040→

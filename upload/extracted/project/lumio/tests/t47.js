@@ -1,0 +1,11 @@
+const {chromium}=require(require('child_process').execSync('npm root -g').toString().trim()+'/playwright');
+(async()=>{const b=await chromium.launch();const p=await b.newPage({viewport:{width:390,height:800}});p.setDefaultTimeout(3000);
+await p.goto('file:///home/claude/lumio/lumio.html');await p.waitForTimeout(250);
+await p.getByText('School Student').click();await p.locator('#root select').nth(0).selectOption({label:'CBSE'});await p.locator('#root select').nth(1).selectOption({label:'Class 11'});await require('./_ob.js').finish(p);await p.waitForTimeout(250);
+await p.evaluate("S.plan.st='00:00';S.plan.bed='23:59';S.plan.n=6;S.plan.len=10;save();render()");
+await p.locator('nav.bn button',{hasText:'Study'}).click();await p.locator('[data-open="0"]').click();await p.waitForTimeout(150);
+console.log('flashcard markup:',await p.evaluate("(()=>{const h=document.getElementById('root').innerHTML;const i=h.indexOf('Flashcards');return h.slice(i,i+420)})()"));
+const info=async()=>p.evaluate("(()=>{const b=document.querySelector('[data-act=qs]');const r=b.getBoundingClientRect();const top=document.elementFromPoint(r.left+r.width/2,Math.min(r.top+r.height/2,innerHeight-1));return JSON.stringify({top:Math.round(r.top),bottom:Math.round(r.bottom),vh:innerHeight,docH:document.documentElement.scrollHeight,scrollY:Math.round(scrollY),covered:top!==b&&!b.contains(top)?top.tagName+'.'+top.className:null,anim:getComputedStyle(b).animationName})})()");
+console.log('t0',await info());await p.waitForTimeout(500);console.log('t1',await info());
+await p.evaluate("document.querySelector('[data-act=qs]').scrollIntoView({block:'center'})");await p.waitForTimeout(300);console.log('after scroll',await info());
+await b.close()})();

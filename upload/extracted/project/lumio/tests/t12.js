@@ -1,0 +1,16 @@
+const {chromium}=require(require('child_process').execSync('npm root -g').toString().trim()+'/playwright');
+(async()=>{const b=await chromium.launch();const p=await b.newPage({viewport:{width:1200,height:800}});p.setDefaultTimeout(4000);const errs=[];p.on('pageerror',e=>errs.push(e.message));
+const T=async()=>(await p.locator('#root').innerText()).replace(/\n+/g,' | ');
+await p.goto('file:///home/claude/lumio/lumio.html');await p.waitForTimeout(300);
+await p.getByText('School Student').click();await p.locator('#root select').nth(0).selectOption({label:'CBSE'});await p.locator('#root select').nth(1).selectOption({label:'Class 11'});
+await require('./_ob.js').finish(p);await p.waitForTimeout(300);
+await p.locator('.nb',{hasText:'Practice'}).click();
+console.log('go targets:',await p.locator('#root [data-go]').evaluateAll(e=>e.map(x=>x.dataset.go)));
+await p.locator('[data-go="ship"]').first().click();await p.waitForTimeout(200);
+console.log('SHIP:',(await T()).slice(240,560));
+console.log('CTRL',JSON.stringify(await p.locator('#root button').evaluateAll(e=>e.map(x=>x.innerText.slice(0,22)).filter(x=>!/Home|Study|Practice|Progress|Awards|Ranks|Settings/.test(x)))));
+await p.locator('button:has-text("Fly mission")').first().click();await p.waitForTimeout(400);
+const tt=await T();console.log('FLY:',tt.slice(tt.indexOf('Fly mission'),tt.indexOf('Fly mission')+420));
+await p.locator('button:has-text("Save design")').click();await p.waitForTimeout(200);await p.reload();await p.waitForTimeout(300);
+console.log('saved ships after reload:',await p.evaluate('S.ships.length'),'xp',await p.evaluate('S.xp'));
+console.log(errs);await b.close()})().catch(e=>console.log('FAIL',e.message.split('\n')[0]));

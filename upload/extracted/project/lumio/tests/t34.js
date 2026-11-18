@@ -1,0 +1,16 @@
+const {chromium}=require(require('child_process').execSync('npm root -g').toString().trim()+'/playwright');
+(async()=>{const b=await chromium.launch();const ctx=await b.newContext({viewport:{width:1200,height:800}});const p=await ctx.newPage();p.setDefaultTimeout(4000);const errs=[];p.on('pageerror',e=>errs.push(e.message));
+const T=async()=>(await p.locator('#root').innerText()).replace(/\n+/g,' | ');
+await p.goto('file:///home/claude/lumio/lumio.html');await p.waitForTimeout(250);
+await p.getByText('Dropper').first().click();await require('./_ob.js').finish(p);await p.waitForTimeout(250);
+await p.locator('.nb',{hasText:'Settings'}).click();
+console.log('g1 options:',await p.locator('#g1 option').allInnerTexts());console.log('g3 options:',await p.locator('#g3 option').allInnerTexts());
+console.log('labels:',await p.locator('label:has(#g1),label:has(#g2),label:has(#g3),label:has(#g4),label:has(#g5)').evaluateAll(e=>e.map(x=>x.innerText.split('\n')[0].slice(0,40))));
+await p.locator('#g1').selectOption({index:1});
+const d=new Date();d.setDate(d.getDate()+90);const iso=d.toLocaleDateString('en-CA');await p.locator('#g2').fill(iso);
+await p.locator('#g4').fill('Rotational motion');await p.locator('#g5').fill('Scored 110/300 in a mock');
+const btn=p.locator('[data-act="ssg"]');console.log('save btn:',await btn.count());await btn.click();await p.waitForTimeout(200);
+await p.locator('.nb',{hasText:'Home'}).click();const h=await T();console.log('countdown on home:',h.match(/[A-Za-z ]*countdown[^|]*\|[^|]*/)?.[0]);
+await p.reload();await p.waitForTimeout(250);await p.locator('.nb',{hasText:'Home'}).click();console.log('persists:',/countdown/.test(await T()),'| state:',await p.evaluate("[S.exam,S.edate===undefined?0:S.edate.length,S.weak,S.prev].join(' / ')"));
+await p.locator('.nb',{hasText:'Study'}).click();console.log('weak area used in Study?',/Rotational motion/.test(await T()));
+console.log(errs);await b.close()})().catch(e=>console.log('FAIL',e.message.split('\n')[0]));

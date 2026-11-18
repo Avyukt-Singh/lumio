@@ -1,0 +1,10 @@
+const {chromium}=require(require('child_process').execSync('npm root -g').toString().trim()+'/playwright');
+(async()=>{const b=await chromium.launch();const p=await b.newPage({viewport:{width:1200,height:800}});p.setDefaultTimeout(4000);const errs=[];p.on('pageerror',e=>errs.push(e.message));
+const T=async()=>(await p.locator('#root').innerText()).replace(/\n+/g,' | ');
+await p.goto('file:///home/claude/lumio/lumio.html');await p.waitForTimeout(250);
+await p.getByText('Dropper').first().click();await require('./_ob.js').finish(p);await p.waitForTimeout(250);
+console.log('HOME:',(await T()).slice(230,700));
+await p.locator('.nb',{hasText:'Study'}).click();const st=await T();console.log('STUDY:',st.slice(230,760));
+console.log('inputs study:',JSON.stringify(await p.locator('#root input, #root select, #root textarea').evaluateAll(e=>e.map(x=>x.id+':'+x.type))));
+await p.locator('.nb',{hasText:'Settings'}).click();console.log('SETTINGS inputs:',JSON.stringify(await p.locator('#root input, #root select, #root textarea').evaluateAll(e=>e.map(x=>x.id+':'+x.type))));
+console.log(errs);await b.close()})().catch(e=>console.log('FAIL',e.message.split('\n')[0]));
